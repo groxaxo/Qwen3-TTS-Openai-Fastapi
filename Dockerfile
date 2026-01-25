@@ -13,6 +13,11 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV NUMBA_CACHE_DIR=/tmp/numba_cache
 
+# NVIDIA Container Runtime environment variables (required for PyTorch CUDA detection)
+ENV NVIDIA_VISIBLE_DEVICES=all
+ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
+ENV LD_LIBRARY_PATH=/usr/local/cuda/lib64:/usr/local/nvidia/lib:/usr/local/nvidia/lib64:${LD_LIBRARY_PATH}
+
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 \
@@ -295,7 +300,5 @@ EXPOSE 8880
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8880/health || exit 1
-
-CMD ["python", "-m", "api.main"]
 
 CMD ["python", "-m", "api.main"]

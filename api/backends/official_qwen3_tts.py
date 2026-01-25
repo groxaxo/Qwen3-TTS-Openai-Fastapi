@@ -56,15 +56,51 @@ class OfficialQwen3TTSBackend(TTSBackend):
                 self.dtype = torch.float32
             
             logger.info(f"Loading Qwen3-TTS model '{self.model_name}' on {self.device}...")
-            
-            # Load model with Flash Attention 2 and optimizations
-            self.model = Qwen3TTSModel.from_pretrained(
-                self.model_name,
-                device_map=self.device,
-                dtype=self.dtype,
-                attn_implementation="flash_attention_2",  # Use Flash Attention 2
-            )
-            
+
+            # Try loading with Flash Attention 2, fallback to SDPA or eager if not supported
+            # (e.g., RTX 5090/Blackwell GPUs don't have pre-built flash-attn wheels yet)
+            attn_implementations = ["flash_attention_2", "sdpa", "eager"]
+            model_loaded = False
+
+            last_error = None
+            for attn_impl in attn_implementations:
+                try:
+                    logger.info(f"Attempting to load model with attention: {attn_impl}")
+                    self.model = Qwen3TTSModel.from_pretrained(
+                        self.model_name,
+                        device_map=self.device,
+                        dtype=self.dtype,
+                        attn_implementation=attn_impl,
+                    )
+                    logger.info(f"Successfully loaded model with {attn_impl} attention")
+                    model_loaded = True
+                    break
+                except Exception as attn_error:
+                    last_error = attn_error
+                    logger.warning(f"Could not load with {attn_impl}: {attn_error}")
+                    if attn_impl != attn_implementations[-1]:
+                        logger.info(f"Falling back to next attention implementation...")
+
+            if not model_loaded:
+                # If GPU loading failed completely, try CPU as last resort
+                if self.device != "cpu":
+                    logger.warning("All GPU attention implementations failed. Falling back to CPU...")
+                    self.device = "cpu"
+                    self.dtype = torch.float32
+                    try:
+                        self.model = Qwen3TTSModel.from_pretrained(
+                            self.model_name,
+                            device_map=self.device,
+                            dtype=self.dtype,
+                            attn_implementation="eager",
+                        )
+                        logger.info("Successfully loaded model on CPU (GPU not compatible)")
+                        model_loaded = True
+                    except Exception as cpu_error:
+                        raise RuntimeError(f"Failed to load model on CPU: {cpu_error}")
+                else:
+                    raise RuntimeError("Failed to load model with any attention implementation")
+
             # Apply torch.compile() optimization for faster inference
             if torch.cuda.is_available() and hasattr(torch, 'compile'):
                 logger.info("Applying torch.compile() optimization...")

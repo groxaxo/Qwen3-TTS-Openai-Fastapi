@@ -60,9 +60,11 @@ async def lifespan(app: FastAPI):
 {boundary}
 """
     logger.info(startup_msg)
-    logger.info(f"Server starting on http://{HOST}:{PORT}")
-    logger.info(f"API Documentation: http://{HOST}:{PORT}/docs")
-    logger.info(f"Web Interface: http://{HOST}:{PORT}/")
+    # Show localhost in logs for user-friendly access URL (server binds to 0.0.0.0)
+    display_host = "localhost" if HOST == "0.0.0.0" else HOST
+    logger.info(f"Server starting on http://{display_host}:{PORT}")
+    logger.info(f"API Documentation: http://{display_host}:{PORT}/docs")
+    logger.info(f"Web Interface: http://{display_host}:{PORT}/")
     logger.info(boundary)
     
     # Pre-load the TTS backend
