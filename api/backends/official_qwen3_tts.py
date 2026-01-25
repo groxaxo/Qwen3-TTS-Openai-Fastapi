@@ -62,7 +62,11 @@ class OfficialQwen3TTSBackend(TTSBackend):
             if torch.cuda.is_available():
                 attn_impl = "flash_attention_2"
             else:
+<<<<<<< HEAD
                 # On CPU, force standard attention to override any config-level flash_attention_2 default
+=======
+                # On CPU, force a standard/non-flash attention implementation
+>>>>>>> 1f115b5c034ede550fd50963b9e5ae90b1f50ac7
                 attn_impl = "eager"
             
             # Load model with optimizations
@@ -71,7 +75,10 @@ class OfficialQwen3TTSBackend(TTSBackend):
                 "dtype": self.dtype,
                 "attn_implementation": attn_impl,
             }
+<<<<<<< HEAD
             
+=======
+>>>>>>> 1f115b5c034ede550fd50963b9e5ae90b1f50ac7
             if attn_impl == "flash_attention_2":
                 logger.info("Using Flash Attention 2 for faster inference")
             else:
