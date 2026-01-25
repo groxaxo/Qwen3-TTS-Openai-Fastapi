@@ -59,15 +59,20 @@ class OfficialQwen3TTSBackend(TTSBackend):
             
             # Determine attention implementation based on device
             # Flash Attention 2 requires CUDA and is not available on CPU
-            attn_impl = "flash_attention_2" if torch.cuda.is_available() else None
+            if torch.cuda.is_available():
+                attn_impl = "flash_attention_2"
+            else:
+                # On CPU, force standard attention to override any config-level flash_attention_2 default
+                attn_impl = "eager"
             
             # Load model with optimizations
             model_kwargs = {
                 "device_map": self.device,
                 "dtype": self.dtype,
+                "attn_implementation": attn_impl,
             }
-            if attn_impl:
-                model_kwargs["attn_implementation"] = attn_impl
+            
+            if attn_impl == "flash_attention_2":
                 logger.info("Using Flash Attention 2 for faster inference")
             else:
                 logger.info("Running on CPU - using standard attention implementation")
