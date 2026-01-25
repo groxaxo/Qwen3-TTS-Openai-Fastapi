@@ -296,6 +296,5 @@ EXPOSE 8880
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:8880/health || exit 1
 
-CMD ["python", "-m", "api.main"]
 
 CMD ["python", "-m", "api.main"]

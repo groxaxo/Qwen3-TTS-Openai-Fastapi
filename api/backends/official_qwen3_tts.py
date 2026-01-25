@@ -57,12 +57,24 @@ class OfficialQwen3TTSBackend(TTSBackend):
             
             logger.info(f"Loading Qwen3-TTS model '{self.model_name}' on {self.device}...")
             
-            # Load model with Flash Attention 2 and optimizations
+            # Determine attention implementation based on device
+            # Flash Attention 2 requires CUDA and is not available on CPU
+            attn_impl = "flash_attention_2" if torch.cuda.is_available() else None
+            
+            # Load model with optimizations
+            model_kwargs = {
+                "device_map": self.device,
+                "dtype": self.dtype,
+            }
+            if attn_impl:
+                model_kwargs["attn_implementation"] = attn_impl
+                logger.info("Using Flash Attention 2 for faster inference")
+            else:
+                logger.info("Running on CPU - using standard attention implementation")
+            
             self.model = Qwen3TTSModel.from_pretrained(
                 self.model_name,
-                device_map=self.device,
-                dtype=self.dtype,
-                attn_implementation="flash_attention_2",  # Use Flash Attention 2
+                **model_kwargs
             )
             
             # Apply torch.compile() optimization for faster inference
