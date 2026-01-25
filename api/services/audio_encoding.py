@@ -95,6 +95,52 @@ def convert_to_wav(
     return buffer.getvalue()
 
 
+def create_wav_streaming_header(
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    num_channels: int = 1,
+    bits_per_sample: int = 16,
+) -> bytes:
+    """
+    Create a WAV header for streaming with unknown final size.
+
+    Uses 0xFFFFFFFF as placeholder for file and data sizes, which is a
+    common convention for streaming WAV. Most players handle this correctly.
+
+    Args:
+        sample_rate: Sample rate in Hz
+        num_channels: Number of audio channels
+        bits_per_sample: Bits per sample (typically 16)
+
+    Returns:
+        WAV header bytes (44 bytes)
+    """
+    buffer = io.BytesIO()
+
+    byte_rate = sample_rate * num_channels * bits_per_sample // 8
+    block_align = num_channels * bits_per_sample // 8
+
+    # RIFF header with placeholder file size
+    buffer.write(b'RIFF')
+    buffer.write(struct.pack('<I', 0xFFFFFFFF))  # Placeholder: will be filled by client
+    buffer.write(b'WAVE')
+
+    # Format chunk
+    buffer.write(b'fmt ')
+    buffer.write(struct.pack('<I', 16))  # Chunk size
+    buffer.write(struct.pack('<H', 1))  # Audio format (PCM)
+    buffer.write(struct.pack('<H', num_channels))
+    buffer.write(struct.pack('<I', sample_rate))
+    buffer.write(struct.pack('<I', byte_rate))
+    buffer.write(struct.pack('<H', block_align))
+    buffer.write(struct.pack('<H', bits_per_sample))
+
+    # Data chunk with placeholder size
+    buffer.write(b'data')
+    buffer.write(struct.pack('<I', 0xFFFFFFFF))  # Placeholder: will be filled by client
+
+    return buffer.getvalue()
+
+
 def convert_to_pcm(
     audio: np.ndarray,
     bits_per_sample: int = 16,

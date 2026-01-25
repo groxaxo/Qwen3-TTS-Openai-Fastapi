@@ -1,0 +1,101 @@
+# Voice Clone Server with Flash Attention 2
+# Based on Qwen3-TTS Base model for voice cloning
+
+# =============================================================================
+# Stage 1: Builder with CUDA development tools for flash-attn
+# =============================================================================
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04 AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    python3.11-dev \
+    build-essential \
+    git \
+    curl \
+    ninja-build \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel
+
+WORKDIR /build
+
+# Install PyTorch with CUDA 12.1
+RUN pip install --no-cache-dir \
+    torch>=2.0.0 \
+    torchaudio>=2.0.0 \
+    --index-url https://download.pytorch.org/whl/cu121
+
+# Install dependencies
+RUN pip install --no-cache-dir \
+    transformers>=4.40.0 \
+    accelerate>=1.0.0 \
+    librosa \
+    soundfile \
+    numpy \
+    scipy \
+    einops
+
+# Install FastAPI
+RUN pip install --no-cache-dir \
+    fastapi>=0.109.0 \
+    uvicorn[standard]>=0.27.0 \
+    pydantic>=2.0.0
+
+# Install flash-attention 2
+RUN pip install --no-cache-dir ninja packaging wheel
+RUN pip install --no-cache-dir flash-attn --no-build-isolation
+
+# =============================================================================
+# Stage 2: Production runtime
+# =============================================================================
+FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04 AS production
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 \
+    python3.11-venv \
+    curl \
+    libsndfile1 \
+    sox \
+    libsox-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && ln -sf /usr/bin/python3 /usr/bin/python
+
+WORKDIR /app
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Copy package files
+COPY pyproject.toml README.md ./
+COPY qwen_tts/ ./qwen_tts/
+COPY voice_clone_server.py ./
+
+# Install qwen_tts package (without heavy deps already installed)
+RUN pip install --no-cache-dir -e . --no-deps && \
+    pip install --no-cache-dir onnxruntime-gpu sox
+
+# Create directories for models and voice refs
+RUN mkdir -p /models /voice_refs
+
+# Environment
+ENV HOST=0.0.0.0
+ENV PORT=8881
+ENV MODEL_PATH=/models/Qwen3-TTS-12Hz-1.7B-Base
+ENV REF_AUDIO=/voice_refs/hai_reference.wav
+
+EXPOSE 8881
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8881/health || exit 1
+
+CMD ["python", "voice_clone_server.py"]

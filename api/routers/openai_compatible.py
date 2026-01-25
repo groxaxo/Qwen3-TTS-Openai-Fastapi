@@ -15,7 +15,13 @@ from fastapi.responses import StreamingResponse
 
 from ..structures.schemas import OpenAISpeechRequest, ModelInfo, VoiceInfo
 from ..services.text_processing import normalize_text
-from ..services.audio_encoding import encode_audio, get_content_type, DEFAULT_SAMPLE_RATE
+from ..services.audio_encoding import (
+    encode_audio,
+    get_content_type,
+    convert_to_pcm,
+    create_wav_streaming_header,
+    DEFAULT_SAMPLE_RATE,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +191,72 @@ async def generate_speech(
         raise RuntimeError(f"Speech generation failed: {e}")
 
 
+async def create_streaming_speech_response(
+    text: str,
+    voice: str,
+    language: str,
+    instruct: Optional[str],
+    speed: float,
+    response_format: str,
+) -> StreamingResponse:
+    """
+    Create a streaming audio response with chunked transfer encoding.
+
+    Streams audio chunks as they are generated, reducing time-to-first-byte
+    for longer texts.
+
+    Args:
+        text: Normalized text to synthesize
+        voice: Voice name
+        language: Language code
+        instruct: Optional voice instruction
+        speed: Speech speed multiplier
+        response_format: Audio format (wav/pcm recommended for streaming)
+
+    Returns:
+        StreamingResponse with chunked audio data
+    """
+    backend = await get_tts_backend()
+    voice_name = get_voice_name(voice)
+
+    async def audio_stream_generator():
+        """Generator yielding audio chunks."""
+        # For WAV format, send header first
+        if response_format == "wav":
+            yield create_wav_streaming_header(DEFAULT_SAMPLE_RATE)
+
+        # Stream audio chunks from backend
+        async for audio_chunk, sr in backend.generate_speech_streaming(
+            text=text,
+            voice=voice_name,
+            language=language,
+            instruct=instruct,
+            speed=speed,
+        ):
+            if audio_chunk is not None and len(audio_chunk) > 0:
+                # Convert to PCM bytes
+                yield convert_to_pcm(audio_chunk)
+
+    # Determine content type
+    if response_format == "wav":
+        content_type = "audio/wav"
+    elif response_format == "pcm":
+        content_type = "audio/pcm"
+    else:
+        # For other formats, default to PCM streaming
+        content_type = "audio/pcm"
+
+    return StreamingResponse(
+        audio_stream_generator(),
+        media_type=content_type,
+        headers={
+            "Content-Disposition": f"attachment; filename=speech.{response_format}",
+            "Cache-Control": "no-cache",
+            "Transfer-Encoding": "chunked",
+        },
+    )
+
+
 @router.post("/audio/speech")
 async def create_speech(
     request: OpenAISpeechRequest,
@@ -223,8 +295,19 @@ async def create_speech(
         # Extract language from model name if present, otherwise use request language
         model_language = extract_language_from_model(request.model)
         language = model_language if model_language else (request.language or "Auto")
-        
-        # Generate speech
+
+        # Handle streaming mode
+        if request.stream:
+            return await create_streaming_speech_response(
+                text=normalized_text,
+                voice=request.voice,
+                language=language,
+                instruct=request.instruct,
+                speed=request.speed,
+                response_format=request.response_format,
+            )
+
+        # Non-streaming: Generate complete speech
         audio, sample_rate = await generate_speech(
             text=normalized_text,
             voice=request.voice,

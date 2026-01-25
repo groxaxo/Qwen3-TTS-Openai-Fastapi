@@ -1,6 +1,38 @@
 version: '3.8'
 
 services:
+  # Voice Clone server with Flash Attention 2
+  voice-clone:
+    build:
+      context: .
+      dockerfile: Dockerfile.voiceclone
+    container_name: voice-clone-tts
+    ports:
+      - "8882:8881"
+    environment:
+      - PORT=8881
+      - MODEL_PATH=/models/Qwen3-TTS-12Hz-1.7B-Base
+      - REF_AUDIO=/voice_refs/hai_reference.wav
+      - CUDA_VISIBLE_DEVICES=0
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - ./models:/models:ro
+      - ./voice_refs:/voice_refs:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8881/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+
   # GPU-enabled service with official backend (default)
   qwen3-tts-gpu:
     build:
@@ -8,7 +40,6 @@ services:
       dockerfile: Dockerfile
       target: production
     container_name: qwen3-tts-api
-    network_mode: host
     ports:
       - "8880:8880"
     environment:
@@ -17,11 +48,15 @@ services:
       - WORKERS=1
       - CORS_ORIGINS=*
       - TTS_BACKEND=official
-      - TTS_WARMUP_ON_START=false
+      - TTS_MODEL_NAME=/models/Qwen3-TTS-12Hz-1.7B-Base
+      - TTS_WARMUP_ON_START=true
       # When using device_ids filter, the GPU appears as device 0 inside container
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      - HF_HUB_OFFLINE=1  # Use local models only
     volumes:
+      # Mount local models directory
+      - ./models:/models
       # Mount model cache for persistence
       - ~/.cache/huggingface:/home/appuser/.cache/huggingface
     deploy:
@@ -29,7 +64,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['2']
+              count: 1
               capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
@@ -45,7 +80,6 @@ services:
       context: .
       dockerfile: Dockerfile.vllm
     container_name: qwen3-tts-api-vllm
-    network_mode: host
     ports:
       - "8880:8880"
     environment:
@@ -87,7 +121,6 @@ services:
       dockerfile: Dockerfile
       target: cpu-base
     container_name: qwen3-tts-api-cpu
-    network_mode: host
     ports:
       - "8880:8880"
     environment:
