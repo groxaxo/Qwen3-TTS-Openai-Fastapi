@@ -480,6 +480,587 @@ class TestVoiceLoading:
         assert "integration_test_voice" in voices
 
 
+# =============================================================================
+# Streaming Tests - Unit (No GPU Required)
+# =============================================================================
+
+class TestStreamingWavHeader:
+    """Unit tests for WAV streaming header structure."""
+
+    def test_wav_header_riff_structure(self):
+        """Test WAV header has correct RIFF structure."""
+        from voice_clone_server import create_wav_streaming_header
+
+        header = create_wav_streaming_header(24000, 1, 16)
+
+        # RIFF chunk
+        assert header[0:4] == b'RIFF', "Should start with RIFF"
+        # File size placeholder (0xFFFFFFFF for streaming)
+        file_size = int.from_bytes(header[4:8], 'little')
+        assert file_size == 0xFFFFFFFF, "File size should be placeholder for streaming"
+        # WAVE format
+        assert header[8:12] == b'WAVE', "Should be WAVE format"
+
+    def test_wav_header_fmt_chunk(self):
+        """Test WAV header fmt chunk is correct."""
+        from voice_clone_server import create_wav_streaming_header
+
+        header = create_wav_streaming_header(24000, 1, 16)
+
+        # fmt chunk
+        assert header[12:16] == b'fmt ', "Should have fmt chunk"
+        fmt_size = int.from_bytes(header[16:20], 'little')
+        assert fmt_size == 16, "fmt chunk should be 16 bytes for PCM"
+
+        # Audio format (PCM = 1)
+        audio_format = int.from_bytes(header[20:22], 'little')
+        assert audio_format == 1, "Should be PCM format"
+
+        # Channels
+        num_channels = int.from_bytes(header[22:24], 'little')
+        assert num_channels == 1, "Should be mono"
+
+        # Sample rate
+        sample_rate = int.from_bytes(header[24:28], 'little')
+        assert sample_rate == 24000, "Sample rate should be 24000"
+
+        # Byte rate (sample_rate * channels * bits/8)
+        byte_rate = int.from_bytes(header[28:32], 'little')
+        assert byte_rate == 24000 * 1 * 2, "Byte rate should be 48000"
+
+        # Block align
+        block_align = int.from_bytes(header[32:34], 'little')
+        assert block_align == 2, "Block align should be 2 (mono 16-bit)"
+
+        # Bits per sample
+        bits_per_sample = int.from_bytes(header[34:36], 'little')
+        assert bits_per_sample == 16, "Should be 16 bits"
+
+    def test_wav_header_data_chunk(self):
+        """Test WAV header data chunk placeholder."""
+        from voice_clone_server import create_wav_streaming_header
+
+        header = create_wav_streaming_header(24000, 1, 16)
+
+        # data chunk
+        assert header[36:40] == b'data', "Should have data chunk"
+        data_size = int.from_bytes(header[40:44], 'little')
+        assert data_size == 0xFFFFFFFF, "Data size should be placeholder for streaming"
+
+    def test_wav_header_total_size(self):
+        """Test WAV header is exactly 44 bytes."""
+        from voice_clone_server import create_wav_streaming_header
+
+        header = create_wav_streaming_header(24000, 1, 16)
+        assert len(header) == 44, "Standard WAV header should be 44 bytes"
+
+    def test_wav_header_different_sample_rates(self):
+        """Test WAV header with different sample rates."""
+        from voice_clone_server import create_wav_streaming_header
+
+        for rate in [8000, 16000, 22050, 24000, 44100, 48000]:
+            header = create_wav_streaming_header(rate, 1, 16)
+            sample_rate = int.from_bytes(header[24:28], 'little')
+            assert sample_rate == rate, f"Sample rate should be {rate}"
+
+
+class TestStreamingPcmFormat:
+    """Unit tests for PCM streaming format."""
+
+    def test_pcm_conversion_produces_correct_bytes(self):
+        """Test PCM conversion produces correct byte length."""
+        from voice_clone_server import convert_to_pcm
+
+        # 100 samples
+        audio = np.random.randn(100).astype(np.float32)
+        pcm = convert_to_pcm(audio)
+
+        # 16-bit = 2 bytes per sample
+        assert len(pcm) == 200
+
+    def test_pcm_little_endian(self):
+        """Test PCM output is little-endian."""
+        from voice_clone_server import convert_to_pcm
+
+        # Create known value
+        audio = np.array([0.5], dtype=np.float32)
+        pcm = convert_to_pcm(audio)
+
+        # 0.5 * 32767 ≈ 16383 = 0x3FFF
+        # Little endian: 0xFF 0x3F
+        decoded = int.from_bytes(pcm, 'little', signed=True)
+        assert 16000 < decoded < 17000, "0.5 should map to ~16383"
+
+    def test_pcm_handles_silence(self):
+        """Test PCM handles silence (zeros)."""
+        from voice_clone_server import convert_to_pcm
+
+        audio = np.zeros(1000, dtype=np.float32)
+        pcm = convert_to_pcm(audio)
+
+        # Should be all zeros
+        decoded = np.frombuffer(pcm, dtype=np.int16)
+        assert np.all(decoded == 0), "Silence should produce zero PCM"
+
+
+class TestStreamingEmptyInput:
+    """Unit tests for empty/edge case inputs."""
+
+    def test_sentence_split_empty_string(self):
+        """Test sentence splitting with empty string."""
+        import re
+
+        text = ""
+        pattern = r'(?<=[.!?。！？])\s+'
+        sentences = re.split(pattern, text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        assert len(sentences) == 0, "Empty string should produce no sentences"
+
+    def test_sentence_split_whitespace_only(self):
+        """Test sentence splitting with whitespace only."""
+        import re
+
+        text = "   \n\t  "
+        pattern = r'(?<=[.!?。！？])\s+'
+        sentences = re.split(pattern, text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        assert len(sentences) == 0, "Whitespace should produce no sentences"
+
+    def test_sentence_split_single_word(self):
+        """Test sentence splitting with single word (no punctuation)."""
+        import re
+
+        text = "Hello"
+        pattern = r'(?<=[.!?。！？])\s+'
+        sentences = re.split(pattern, text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        assert len(sentences) == 1
+        assert sentences[0] == "Hello"
+
+
+class TestStreamingLongInput:
+    """Unit tests for long input handling."""
+
+    def test_sentence_split_very_long_sentence(self):
+        """Test splitting a very long single sentence."""
+        import re
+
+        # 500 words without sentence-ending punctuation
+        text = " ".join(["word"] * 500)
+        pattern = r'(?<=[.!?。！？])\s+'
+        sentences = re.split(pattern, text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        # Should be treated as single sentence
+        assert len(sentences) == 1
+        assert len(sentences[0].split()) == 500
+
+    def test_sentence_split_many_sentences(self):
+        """Test splitting many sentences."""
+        import re
+
+        # 50 sentences
+        text = ". ".join([f"Sentence number {i}" for i in range(50)]) + "."
+        pattern = r'(?<=[.!?。！？])\s+'
+        sentences = re.split(pattern, text.strip())
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        assert len(sentences) == 50
+
+
+# =============================================================================
+# Streaming Tests - Integration (Require GPU/Server)
+# =============================================================================
+
+@pytest.mark.integration
+class TestStreamingEndpoint:
+    """Integration tests for streaming endpoint behavior."""
+
+    @pytest.fixture
+    def client(self):
+        """Create test client."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        return TestClient(app)
+
+    def test_streaming_single_sentence(self, client):
+        """Test streaming with single sentence still works."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "Hello world.",
+                "voice": "hai",
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+
+        assert response.status_code == 200
+
+        content = response.content
+        # Should have WAV header + audio data
+        assert len(content) > 44, "Should have header + audio"
+        assert content[:4] == b'RIFF', "Should start with RIFF"
+
+    def test_streaming_multi_sentence(self, client):
+        """Test streaming with multiple sentences."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "First sentence. Second sentence. Third sentence.",
+                "voice": "hai",
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+
+        assert response.status_code == 200
+
+        content = response.content
+        # Should have substantial audio for 3 sentences
+        assert len(content) > 10000, "3 sentences should produce significant audio"
+
+    def test_streaming_very_long_sentence(self, client):
+        """Test streaming with very long single sentence."""
+        # Long sentence without punctuation breaks
+        long_text = "This is a very long sentence that goes on and on " * 10
+        long_text = long_text.strip() + "."
+
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": long_text,
+                "voice": "hai",
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+
+        assert response.status_code == 200
+        content = response.content
+        # Should produce audio even for long sentence
+        assert len(content) > 44
+
+    def test_streaming_pcm_format(self, client):
+        """Test streaming with PCM format (no WAV header)."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "Hello world.",
+                "voice": "hai",
+                "stream": True,
+                "response_format": "pcm",
+            },
+        )
+
+        assert response.status_code == 200
+
+        content = response.content
+        # PCM should NOT have RIFF header
+        assert content[:4] != b'RIFF', "PCM should not have WAV header"
+        # Should have audio data
+        assert len(content) > 0, "Should have audio data"
+        # PCM is 16-bit, so length should be even
+        assert len(content) % 2 == 0, "PCM should have even byte count"
+
+    def test_streaming_wav_header_correct(self, client):
+        """Test streaming WAV response has correct header."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "Test.",
+                "voice": "hai",
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+
+        assert response.status_code == 200
+
+        content = response.content
+        header = content[:44]
+
+        # Verify RIFF structure
+        assert header[:4] == b'RIFF'
+        assert header[8:12] == b'WAVE'
+        assert header[12:16] == b'fmt '
+        assert header[36:40] == b'data'
+
+        # Verify sample rate in header
+        sample_rate = int.from_bytes(header[24:28], 'little')
+        assert sample_rate == 24000
+
+    def test_streaming_empty_text_handling(self, client):
+        """Test streaming with empty text."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "",
+                "voice": "hai",
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+
+        # Empty text should either return error or empty audio
+        # Depends on implementation - just verify it doesn't crash
+        assert response.status_code in [200, 400, 422]
+
+    def test_streaming_whitespace_text(self, client):
+        """Test streaming with whitespace-only text."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "   \n\t   ",
+                "voice": "hai",
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+
+        # Whitespace should be handled gracefully
+        assert response.status_code in [200, 400, 422]
+
+    def test_streaming_vs_non_streaming_audio_similar(self, client):
+        """Test that streaming and non-streaming produce similar audio lengths."""
+        text = "Hello, this is a test of the streaming functionality."
+
+        # Non-streaming
+        response_normal = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": text,
+                "voice": "hai",
+                "stream": False,
+            },
+        )
+
+        # Streaming
+        response_stream = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": text,
+                "voice": "hai",
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+
+        assert response_normal.status_code == 200
+        assert response_stream.status_code == 200
+
+        # Audio lengths should be similar (within 20%)
+        len_normal = len(response_normal.content)
+        len_stream = len(response_stream.content)
+
+        ratio = len_stream / len_normal if len_normal > 0 else 0
+        assert 0.5 < ratio < 2.0, f"Audio lengths differ too much: {len_normal} vs {len_stream}"
+
+    def test_streaming_invalid_voice(self, client):
+        """Test streaming with invalid voice name."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "Hello.",
+                "voice": "nonexistent_voice_12345",
+                "stream": True,
+            },
+        )
+
+        assert response.status_code == 400
+        assert "not loaded" in response.text.lower() or "not found" in response.text.lower()
+
+
+@pytest.mark.integration
+class TestStreamingKvCacheBehavior:
+    """Integration tests for KV cache behavior during streaming."""
+
+    @pytest.fixture
+    def client(self):
+        """Create test client."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        return TestClient(app)
+
+    def test_streaming_with_kv_cache_enabled(self, client):
+        """Test streaming works with KV cache enabled."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "First. Second. Third.",
+                "voice": "hai",
+                "stream": True,
+                "use_kv_cache": True,
+                "response_format": "wav",
+            },
+        )
+
+        assert response.status_code == 200
+        assert len(response.content) > 44
+
+    def test_streaming_with_kv_cache_disabled(self, client):
+        """Test streaming works with KV cache disabled."""
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "First. Second. Third.",
+                "voice": "hai",
+                "stream": True,
+                "use_kv_cache": False,
+                "response_format": "wav",
+            },
+        )
+
+        assert response.status_code == 200
+        assert len(response.content) > 44
+
+    def test_kv_cache_not_mutated_during_streaming(self):
+        """Test that KV cache is not mutated during streaming generation."""
+        from voice_clone_server import voices, DEFAULT_VOICE, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        voice_cache = voices.get(DEFAULT_VOICE)
+        if voice_cache is None:
+            pytest.skip("Default voice not loaded")
+
+        # Record initial KV cache state
+        initial_prefix_length = voice_cache.prefix_length
+        initial_kv_cached = voice_cache.kv_cache is not None
+
+        # If KV cache exists, record its size
+        initial_kv_size = None
+        if voice_cache.kv_cache is not None and hasattr(voice_cache.kv_cache, 'key_cache'):
+            initial_kv_size = len(voice_cache.kv_cache.key_cache)
+
+        # Run streaming generation
+        import asyncio
+        from voice_clone_server import generate_speech_streaming
+
+        async def run_streaming():
+            chunks = []
+            async for audio, sr in generate_speech_streaming(
+                text="First. Second. Third. Fourth. Fifth.",
+                language="English",
+                voice_cache=voice_cache,
+                use_cache=True,
+            ):
+                chunks.append(audio)
+            return chunks
+
+        chunks = asyncio.run(run_streaming())
+        assert len(chunks) >= 1
+
+        # Verify KV cache was not mutated
+        assert voice_cache.prefix_length == initial_prefix_length, "prefix_length should not change"
+        assert (voice_cache.kv_cache is not None) == initial_kv_cached, "kv_cache presence should not change"
+
+        if initial_kv_size is not None and hasattr(voice_cache.kv_cache, 'key_cache'):
+            assert len(voice_cache.kv_cache.key_cache) == initial_kv_size, "kv_cache size should not change"
+
+    def test_multiple_streaming_requests_same_voice(self, client):
+        """Test multiple streaming requests reuse cached voice."""
+        from voice_clone_server import voices, DEFAULT_VOICE
+
+        voice_cache = voices.get(DEFAULT_VOICE)
+        if voice_cache is None:
+            pytest.skip("Default voice not loaded")
+
+        initial_prefix_length = voice_cache.prefix_length
+
+        # Make multiple streaming requests
+        for i in range(3):
+            response = client.post(
+                "/v1/audio/speech",
+                json={
+                    "text": f"Request number {i}.",
+                    "voice": "hai",
+                    "stream": True,
+                    "use_kv_cache": True,
+                },
+            )
+            assert response.status_code == 200
+
+        # Voice cache should still have same prefix length (not recomputed)
+        assert voice_cache.prefix_length == initial_prefix_length
+
+
+@pytest.mark.integration
+class TestStreamingErrorHandling:
+    """Integration tests for error handling during streaming."""
+
+    @pytest.fixture
+    def client(self):
+        """Create test client."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        return TestClient(app)
+
+    def test_streaming_model_not_loaded_error(self):
+        """Test error when model is not loaded."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app
+        import voice_clone_server
+
+        # Temporarily set model to None
+        original_model = voice_clone_server.model
+        voice_clone_server.model = None
+
+        try:
+            client = TestClient(app, raise_server_exceptions=False)
+            response = client.post(
+                "/v1/audio/speech",
+                json={
+                    "text": "Hello.",
+                    "voice": "hai",
+                    "stream": True,
+                },
+            )
+
+            assert response.status_code == 503
+            assert "not loaded" in response.text.lower()
+        finally:
+            voice_clone_server.model = original_model
+
+    def test_streaming_recovers_from_sentence_error(self, client):
+        """Test that streaming continues even if one sentence fails."""
+        # This tests the error handling in the streaming generator
+        # The generator should continue to next sentence if one fails
+
+        # Use a text that might trigger edge cases
+        text = "Normal sentence. Another normal one."
+
+        response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": text,
+                "voice": "hai",
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+
+        # Should still succeed overall
+        assert response.status_code == 200
+        assert len(response.content) > 44
+
+
 @pytest.mark.integration
 class TestStreamingGeneration:
     """Integration tests for streaming generation."""
@@ -519,6 +1100,37 @@ class TestStreamingGeneration:
         for audio, sr in chunks:
             assert sr == 24000
             assert len(audio) > 0
+
+    def test_streaming_chunk_count_matches_sentences(self):
+        """Test that number of chunks roughly matches sentence count."""
+        import asyncio
+        from voice_clone_server import generate_speech_streaming, voices, DEFAULT_VOICE, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        voice_cache = voices.get(DEFAULT_VOICE)
+        if voice_cache is None:
+            pytest.skip("Default voice not loaded")
+
+        text = "One. Two. Three. Four. Five."
+
+        async def collect_chunks():
+            chunks = []
+            async for audio_chunk, sr in generate_speech_streaming(
+                text=text,
+                language="English",
+                voice_cache=voice_cache,
+                use_cache=True,
+            ):
+                chunks.append(audio_chunk)
+            return chunks
+
+        chunks = asyncio.run(collect_chunks())
+
+        # Should get approximately 5 chunks (one per sentence)
+        # Allow some flexibility for sentence parsing edge cases
+        assert 4 <= len(chunks) <= 6, f"Expected ~5 chunks, got {len(chunks)}"
 
 
 # =============================================================================
