@@ -22,3 +22,11 @@ wheels/
 .vscode/
 venv/
 env/
+.venv/
+
+# Model files and voice references (large files)
+models/
+voice_refs/
+
+# Test output files
+*.wav
