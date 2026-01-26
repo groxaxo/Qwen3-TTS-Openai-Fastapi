@@ -273,6 +273,54 @@ docker-compose down
 
 **Model Cache:** Models are cached in `~/.cache/huggingface` and automatically mounted as a volume for persistence.
 
+### Voice Clone Server
+
+A dedicated voice cloning server with KV cache optimization for low-latency inference:
+
+```bash
+# Start voice clone server (requires Base model)
+docker-compose up voice-clone
+```
+
+**Features:**
+- **KV Cache Acceleration**: Pre-computes attention states for voice prompts (~8% faster inference)
+- **Dynamic Voice Loading**: Load new voices at runtime via API
+- **Multi-Voice Support**: Manage multiple voices with separate caches
+- **Streaming Support**: Sentence-level streaming for faster time-to-first-byte
+
+**API Endpoints:**
+- `POST /v1/audio/speech` - Generate speech with voice cloning
+- `POST /v1/voices/load` - Load a new voice from reference audio
+- `GET /v1/voices` - List loaded voices with KV cache status
+- `GET /health` - Health check
+
+**Example: Load a custom voice:**
+```bash
+curl -X POST http://localhost:8882/v1/voices/load \
+  -H "Content-Type: application/json" \
+  -d '{
+    "voice_name": "my_voice",
+    "ref_audio_path": "/voice_refs/my_reference.wav",
+    "ref_text": "Transcript of the reference audio."
+  }'
+```
+
+**Example: Generate speech with custom voice:**
+```bash
+curl -X POST http://localhost:8882/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{
+    "text": "Hello, this is my cloned voice!",
+    "voice": "my_voice",
+    "use_kv_cache": true
+  }' -o output.wav
+```
+
+**Benchmark:**
+```bash
+python benchmark_kv_cache.py
+```
+
 ## 🎯 API Endpoints
 
 - `POST /v1/audio/speech` - Generate speech (OpenAI-compatible)
