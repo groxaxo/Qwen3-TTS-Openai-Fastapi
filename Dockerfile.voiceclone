@@ -30,9 +30,9 @@ RUN pip install --no-cache-dir \
     torchaudio>=2.0.0 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# Install dependencies
+# Install dependencies (transformers pinned to 4.57.3 for qwen_tts compatibility)
 RUN pip install --no-cache-dir \
-    transformers>=4.40.0 \
+    transformers==4.57.3 \
     accelerate>=1.0.0 \
     librosa \
     soundfile \
