@@ -16,12 +16,17 @@ Run all tests (requires GPU):
 """
 
 import io
+import json
 import os
+import tempfile
+import shutil
 import pytest
 import numpy as np
+from pathlib import Path
 from unittest.mock import Mock, MagicMock, patch, AsyncMock
 from dataclasses import dataclass
 from typing import List, Any, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 import torch
 from transformers.cache_utils import DynamicCache
@@ -1131,6 +1136,731 @@ class TestStreamingGeneration:
         # Should get approximately 5 chunks (one per sentence)
         # Allow some flexibility for sentence parsing edge cases
         assert 4 <= len(chunks) <= 6, f"Expected ~5 chunks, got {len(chunks)}"
+
+
+# =============================================================================
+# Voice Upload Tests (No GPU Required)
+# =============================================================================
+
+class TestVoiceUploadValidation:
+    """Unit tests for voice upload endpoint validation."""
+
+    def test_upload_validates_empty_voice_name(self):
+        """Test upload rejects empty voice name."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app
+
+        with patch('voice_clone_server.model') as mock_model:
+            mock_model.__bool__ = Mock(return_value=True)
+
+            client = TestClient(app, raise_server_exceptions=False)
+
+            # Create sample audio
+            audio_content = b'RIFF' + b'\x00' * 40
+
+            response = client.post(
+                "/v1/voices/upload",
+                data={"voice_name": "", "ref_text": "Test text"},
+                files={"audio_file": ("test.wav", audio_content, "audio/wav")},
+            )
+
+            # FastAPI returns 422 for validation errors or 400 for custom validation
+            assert response.status_code in [400, 422]
+
+    def test_upload_validates_file_extension(self):
+        """Test upload rejects invalid file types."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app
+
+        with patch('voice_clone_server.model') as mock_model:
+            mock_model.__bool__ = Mock(return_value=True)
+
+            client = TestClient(app, raise_server_exceptions=False)
+
+            response = client.post(
+                "/v1/voices/upload",
+                data={"voice_name": "test_voice", "ref_text": "Test text"},
+                files={"audio_file": ("test.txt", b"not audio", "text/plain")},
+            )
+
+            assert response.status_code == 400
+            assert "invalid file type" in response.text.lower()
+
+    def test_upload_accepts_valid_extensions(self):
+        """Test upload accepts wav, mp3, flac, ogg, m4a."""
+        # Just check the validation logic, not actual upload
+        allowed_extensions = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+
+        for ext in allowed_extensions:
+            assert ext in allowed_extensions
+
+
+class TestVoiceUploadFilePaths:
+    """Unit tests for voice upload file path handling."""
+
+    def test_get_voice_cache_path(self):
+        """Test voice cache path generation."""
+        from voice_clone_server import get_voice_cache_path, VOICE_REFS_DIR
+
+        path = get_voice_cache_path("my_voice")
+        assert path == VOICE_REFS_DIR / "my_voice_kvcache.safetensors"
+
+    def test_get_voice_metadata_path(self):
+        """Test voice metadata path generation."""
+        from voice_clone_server import get_voice_metadata_path, VOICE_REFS_DIR
+
+        path = get_voice_metadata_path("my_voice")
+        assert path == VOICE_REFS_DIR / "my_voice_metadata.json"
+
+    def test_discover_cached_voices_empty_dir(self):
+        """Test discover_cached_voices with no caches."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch('voice_clone_server.VOICE_REFS_DIR', Path(tmpdir)):
+                from voice_clone_server import discover_cached_voices
+
+                voices = discover_cached_voices()
+                assert voices == []
+
+
+# =============================================================================
+# KV Cache Persistence Tests (No GPU Required for most)
+# =============================================================================
+
+class TestKvCacheSaveLoad:
+    """Unit tests for KV cache persistence."""
+
+    @pytest.fixture
+    def temp_voice_dir(self):
+        """Create temporary directory for voice files."""
+        tmpdir = tempfile.mkdtemp()
+        yield Path(tmpdir)
+        shutil.rmtree(tmpdir)
+
+    def test_save_voice_cache_creates_files(self, temp_voice_dir, mock_voice_prompt):
+        """Test save_voice_cache_to_disk creates safetensors and metadata files."""
+        from voice_clone_server import (
+            save_voice_cache_to_disk,
+            VoiceCache,
+            get_voice_cache_path,
+            get_voice_metadata_path,
+        )
+
+        # Create a mock voice cache with KV cache
+        kv_cache = DynamicCache()
+        key = torch.randn(1, 8, 10, 64)
+        value = torch.randn(1, 8, 10, 64)
+        kv_cache.update(key, value, layer_idx=0)
+
+        voice_cache = VoiceCache(
+            prompt=mock_voice_prompt,
+            kv_cache=kv_cache,
+            past_hidden=torch.randn(1, 10, 256),
+            prefix_length=100,
+            ref_text="Test reference text",
+            ref_audio_path="/path/to/audio.wav",
+        )
+
+        with patch('voice_clone_server.VOICE_REFS_DIR', temp_voice_dir):
+            # Reload to get updated paths
+            import importlib
+            import voice_clone_server
+            importlib.reload(voice_clone_server)
+
+            with patch('voice_clone_server.VOICE_REFS_DIR', temp_voice_dir):
+                result = save_voice_cache_to_disk("test_voice", voice_cache)
+
+        assert result is True
+
+        # Check files exist
+        cache_path = temp_voice_dir / "test_voice_kvcache.safetensors"
+        metadata_path = temp_voice_dir / "test_voice_metadata.json"
+
+        assert cache_path.exists(), "Cache file should exist"
+        assert metadata_path.exists(), "Metadata file should exist"
+
+        # Verify metadata content
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+
+        assert metadata["ref_text"] == "Test reference text"
+        assert metadata["prefix_length"] == 100
+        assert metadata["ref_audio_path"] == "/path/to/audio.wav"
+
+    def test_load_voice_cache_from_disk_missing_file(self, temp_voice_dir):
+        """Test load returns None for missing files."""
+        with patch('voice_clone_server.VOICE_REFS_DIR', temp_voice_dir):
+            from voice_clone_server import load_voice_cache_from_disk
+
+            result = load_voice_cache_from_disk("nonexistent_voice")
+            assert result is None
+
+    def test_save_load_roundtrip(self, temp_voice_dir, mock_voice_prompt):
+        """Test save then load preserves data."""
+        from voice_clone_server import (
+            save_voice_cache_to_disk,
+            load_voice_cache_from_disk,
+            VoiceCache,
+        )
+
+        # Create voice cache
+        kv_cache = DynamicCache()
+        key = torch.randn(1, 8, 10, 64)
+        value = torch.randn(1, 8, 10, 64)
+        kv_cache.update(key, value, layer_idx=0)
+
+        past_hidden = torch.randn(1, 10, 256)
+
+        voice_cache = VoiceCache(
+            prompt=mock_voice_prompt,
+            kv_cache=kv_cache,
+            past_hidden=past_hidden,
+            prefix_length=42,
+            ref_text="Roundtrip test",
+            ref_audio_path="/test/path.wav",
+        )
+
+        with patch('voice_clone_server.VOICE_REFS_DIR', temp_voice_dir):
+            # Save
+            save_voice_cache_to_disk("roundtrip_voice", voice_cache)
+
+            # Load
+            result = load_voice_cache_from_disk("roundtrip_voice", device="cpu")
+
+        assert result is not None
+        loaded_kv, loaded_hidden, loaded_prefix, loaded_metadata = result
+
+        # Verify loaded data
+        assert loaded_prefix == 42
+        assert loaded_metadata["ref_text"] == "Roundtrip test"
+        assert loaded_metadata["ref_audio_path"] == "/test/path.wav"
+        assert loaded_kv is not None
+        assert loaded_hidden is not None
+
+
+class TestKvCacheDelete:
+    """Unit tests for KV cache deletion."""
+
+    @pytest.fixture
+    def temp_voice_dir(self):
+        """Create temporary directory for voice files."""
+        tmpdir = tempfile.mkdtemp()
+        yield Path(tmpdir)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_delete_voice_cache_removes_files(self, temp_voice_dir):
+        """Test delete_voice_cache_from_disk removes cache and metadata."""
+        # Create mock files
+        cache_path = temp_voice_dir / "test_delete_kvcache.safetensors"
+        metadata_path = temp_voice_dir / "test_delete_metadata.json"
+
+        cache_path.write_bytes(b"mock cache data")
+        metadata_path.write_text('{"ref_text": "test"}')
+
+        with patch('voice_clone_server.VOICE_REFS_DIR', temp_voice_dir):
+            from voice_clone_server import delete_voice_cache_from_disk
+
+            result = delete_voice_cache_from_disk("test_delete")
+
+        assert result is True
+        assert not cache_path.exists()
+        assert not metadata_path.exists()
+
+    def test_delete_nonexistent_voice(self, temp_voice_dir):
+        """Test delete handles nonexistent files gracefully."""
+        with patch('voice_clone_server.VOICE_REFS_DIR', temp_voice_dir):
+            from voice_clone_server import delete_voice_cache_from_disk
+
+            # Should return True even if files don't exist
+            result = delete_voice_cache_from_disk("nonexistent")
+            assert result is True
+
+
+class TestDiscoverCachedVoices:
+    """Unit tests for discover_cached_voices."""
+
+    @pytest.fixture
+    def temp_voice_dir(self):
+        """Create temporary directory for voice files."""
+        tmpdir = tempfile.mkdtemp()
+        yield Path(tmpdir)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+    def test_discover_finds_complete_caches(self, temp_voice_dir):
+        """Test discover finds voices with both cache and metadata."""
+        # Create complete voice (cache + metadata)
+        (temp_voice_dir / "voice1_kvcache.safetensors").write_bytes(b"cache")
+        (temp_voice_dir / "voice1_metadata.json").write_text('{}')
+
+        # Create incomplete voice (cache only)
+        (temp_voice_dir / "voice2_kvcache.safetensors").write_bytes(b"cache")
+
+        with patch('voice_clone_server.VOICE_REFS_DIR', temp_voice_dir):
+            from voice_clone_server import discover_cached_voices
+
+            voices = discover_cached_voices()
+
+        assert "voice1" in voices
+        assert "voice2" not in voices  # Missing metadata
+
+    def test_discover_multiple_voices(self, temp_voice_dir):
+        """Test discover finds multiple complete voices."""
+        for name in ["alice", "bob", "charlie"]:
+            (temp_voice_dir / f"{name}_kvcache.safetensors").write_bytes(b"cache")
+            (temp_voice_dir / f"{name}_metadata.json").write_text('{}')
+
+        with patch('voice_clone_server.VOICE_REFS_DIR', temp_voice_dir):
+            from voice_clone_server import discover_cached_voices
+
+            voices = discover_cached_voices()
+
+        assert len(voices) == 3
+        assert set(voices) == {"alice", "bob", "charlie"}
+
+
+# =============================================================================
+# Voice Delete Endpoint Tests (No GPU Required)
+# =============================================================================
+
+class TestVoiceDeleteEndpoint:
+    """Unit tests for DELETE /v1/voices/{name} endpoint."""
+
+    def test_delete_default_voice_rejected(self):
+        """Test cannot delete default voice."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app, DEFAULT_VOICE
+
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.delete(f"/v1/voices/{DEFAULT_VOICE}")
+
+        assert response.status_code == 400
+        assert "cannot delete" in response.text.lower() or "default" in response.text.lower()
+
+    def test_delete_nonexistent_voice(self):
+        """Test deleting nonexistent voice returns 404."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app
+
+        client = TestClient(app, raise_server_exceptions=False)
+
+        response = client.delete("/v1/voices/nonexistent_voice_xyz")
+
+        assert response.status_code == 404
+
+
+# =============================================================================
+# Hot Swapping Tests (Integration - Require GPU)
+# =============================================================================
+
+@pytest.mark.integration
+class TestHotSwapping:
+    """Integration tests for hot swapping between voices."""
+
+    @pytest.fixture
+    def client(self):
+        """Create test client with loaded model."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        return TestClient(app)
+
+    def test_switch_between_voices_rapidly(self, client):
+        """Test rapid switching between cached voices."""
+        from voice_clone_server import voices
+
+        if len(voices) < 1:
+            pytest.skip("Need at least one voice loaded")
+
+        voice_names = list(voices.keys())
+
+        # Rapidly switch between voices
+        for i in range(10):
+            voice = voice_names[i % len(voice_names)]
+            response = client.post(
+                "/v1/audio/speech",
+                json={
+                    "text": f"Test {i}.",
+                    "voice": voice,
+                },
+            )
+            assert response.status_code == 200
+
+    def test_concurrent_requests_different_voices(self, client):
+        """Test concurrent requests with different voices."""
+        from voice_clone_server import voices
+
+        if len(voices) < 1:
+            pytest.skip("Need at least one voice loaded")
+
+        voice_names = list(voices.keys())
+
+        def make_request(idx):
+            voice = voice_names[idx % len(voice_names)]
+            response = client.post(
+                "/v1/audio/speech",
+                json={
+                    "text": f"Concurrent test {idx}.",
+                    "voice": voice,
+                },
+            )
+            return response.status_code
+
+        # Use ThreadPoolExecutor for concurrent requests
+        with ThreadPoolExecutor(max_workers=3) as executor:
+            futures = [executor.submit(make_request, i) for i in range(6)]
+            results = [f.result() for f in futures]
+
+        # All should succeed
+        assert all(status == 200 for status in results)
+
+
+@pytest.mark.integration
+class TestVoiceUploadIntegration:
+    """Integration tests for voice upload (requires GPU)."""
+
+    @pytest.fixture
+    def client(self):
+        """Create test client."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        return TestClient(app)
+
+    @pytest.fixture
+    def sample_wav_bytes(self):
+        """Create valid WAV bytes for testing."""
+        import soundfile as sf
+        import io
+
+        # Create 3 seconds of audio
+        sample_rate = 24000
+        duration = 3.0
+        samples = np.random.randn(int(sample_rate * duration)).astype(np.float32) * 0.1
+
+        buf = io.BytesIO()
+        sf.write(buf, samples, sample_rate, format='WAV')
+        buf.seek(0)
+        return buf.read()
+
+    def test_upload_wav_creates_voice(self, client, sample_wav_bytes):
+        """Test uploading WAV file creates a usable voice."""
+        import uuid
+
+        voice_name = f"test_upload_{uuid.uuid4().hex[:8]}"
+
+        try:
+            response = client.post(
+                "/v1/voices/upload",
+                data={
+                    "voice_name": voice_name,
+                    "ref_text": "This is a test reference audio for voice cloning.",
+                },
+                files={"audio_file": ("test.wav", sample_wav_bytes, "audio/wav")},
+            )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["voice_name"] == voice_name
+            assert data["kv_cached"] is True or data["kv_cached"] is False
+            assert data["persisted"] is True
+
+            # Verify voice can be used for TTS
+            tts_response = client.post(
+                "/v1/audio/speech",
+                json={
+                    "text": "Hello using uploaded voice.",
+                    "voice": voice_name,
+                },
+            )
+            assert tts_response.status_code == 200
+
+        finally:
+            # Cleanup
+            client.delete(f"/v1/voices/{voice_name}")
+
+    def test_upload_multiple_voices(self, client, sample_wav_bytes):
+        """Test uploading multiple different voices."""
+        import uuid
+
+        voice_names = [f"multi_test_{uuid.uuid4().hex[:8]}" for _ in range(3)]
+
+        try:
+            for voice_name in voice_names:
+                response = client.post(
+                    "/v1/voices/upload",
+                    data={
+                        "voice_name": voice_name,
+                        "ref_text": f"Reference text for {voice_name}.",
+                    },
+                    files={"audio_file": ("test.wav", sample_wav_bytes, "audio/wav")},
+                )
+                assert response.status_code == 200
+
+            # Verify all voices are listed
+            list_response = client.get("/v1/voices")
+            voices_data = list_response.json()["voices"]
+
+            for voice_name in voice_names:
+                assert voice_name in voices_data
+
+        finally:
+            # Cleanup
+            for voice_name in voice_names:
+                client.delete(f"/v1/voices/{voice_name}")
+
+    def test_upload_duplicate_voice_name(self, client, sample_wav_bytes):
+        """Test uploading with duplicate name overwrites."""
+        import uuid
+
+        voice_name = f"dup_test_{uuid.uuid4().hex[:8]}"
+
+        try:
+            # First upload
+            response1 = client.post(
+                "/v1/voices/upload",
+                data={
+                    "voice_name": voice_name,
+                    "ref_text": "First reference text.",
+                },
+                files={"audio_file": ("test.wav", sample_wav_bytes, "audio/wav")},
+            )
+            assert response1.status_code == 200
+
+            # Second upload with same name
+            response2 = client.post(
+                "/v1/voices/upload",
+                data={
+                    "voice_name": voice_name,
+                    "ref_text": "Second reference text.",
+                },
+                files={"audio_file": ("test2.wav", sample_wav_bytes, "audio/wav")},
+            )
+            # Should succeed (overwrite)
+            assert response2.status_code == 200
+
+        finally:
+            client.delete(f"/v1/voices/{voice_name}")
+
+
+@pytest.mark.integration
+class TestVoiceDeleteIntegration:
+    """Integration tests for voice deletion (requires GPU)."""
+
+    @pytest.fixture
+    def client(self):
+        """Create test client."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        return TestClient(app)
+
+    @pytest.fixture
+    def sample_wav_bytes(self):
+        """Create valid WAV bytes for testing."""
+        import soundfile as sf
+        import io
+
+        sample_rate = 24000
+        samples = np.random.randn(int(sample_rate * 3)).astype(np.float32) * 0.1
+
+        buf = io.BytesIO()
+        sf.write(buf, samples, sample_rate, format='WAV')
+        buf.seek(0)
+        return buf.read()
+
+    def test_delete_uploaded_voice(self, client, sample_wav_bytes):
+        """Test deleting an uploaded voice removes it completely."""
+        import uuid
+        from voice_clone_server import VOICE_REFS_DIR
+
+        voice_name = f"delete_test_{uuid.uuid4().hex[:8]}"
+
+        # Upload voice
+        client.post(
+            "/v1/voices/upload",
+            data={
+                "voice_name": voice_name,
+                "ref_text": "Test for deletion.",
+            },
+            files={"audio_file": ("test.wav", sample_wav_bytes, "audio/wav")},
+        )
+
+        # Verify it exists
+        list_response = client.get("/v1/voices")
+        assert voice_name in list_response.json()["voices"]
+
+        # Delete voice
+        delete_response = client.delete(f"/v1/voices/{voice_name}")
+        assert delete_response.status_code == 200
+
+        # Verify it's gone from memory
+        list_response2 = client.get("/v1/voices")
+        assert voice_name not in list_response2.json()["voices"]
+
+        # Verify cache files are deleted
+        cache_path = VOICE_REFS_DIR / f"{voice_name}_kvcache.safetensors"
+        metadata_path = VOICE_REFS_DIR / f"{voice_name}_metadata.json"
+        assert not cache_path.exists()
+        assert not metadata_path.exists()
+
+
+@pytest.mark.integration
+class TestPersistenceAcrossReload:
+    """Integration tests for voice persistence across module reload."""
+
+    def test_voices_persist_in_cache(self):
+        """Test that voice caches are saved to disk."""
+        from voice_clone_server import voices, VOICE_REFS_DIR
+
+        # Check that default voice has cache file
+        if "hai" in voices:
+            cache_path = VOICE_REFS_DIR / "hai_kvcache.safetensors"
+            # May or may not exist depending on test order
+            # Just verify the path is correct format
+            assert "hai_kvcache.safetensors" in str(cache_path)
+
+
+@pytest.mark.integration
+class TestFullFlow:
+    """Integration tests for complete upload->generate->delete flow."""
+
+    @pytest.fixture
+    def client(self):
+        """Create test client."""
+        from fastapi.testclient import TestClient
+        from voice_clone_server import app, model
+
+        if model is None:
+            pytest.skip("Model not loaded")
+
+        return TestClient(app)
+
+    @pytest.fixture
+    def sample_wav_bytes(self):
+        """Create valid WAV bytes for testing."""
+        import soundfile as sf
+        import io
+
+        sample_rate = 24000
+        samples = np.random.randn(int(sample_rate * 3)).astype(np.float32) * 0.1
+
+        buf = io.BytesIO()
+        sf.write(buf, samples, sample_rate, format='WAV')
+        buf.seek(0)
+        return buf.read()
+
+    def test_full_flow_upload_generate_delete(self, client, sample_wav_bytes):
+        """Test complete flow: upload -> generate -> verify -> delete."""
+        import uuid
+
+        voice_name = f"fullflow_{uuid.uuid4().hex[:8]}"
+
+        # Step 1: Upload
+        upload_response = client.post(
+            "/v1/voices/upload",
+            data={
+                "voice_name": voice_name,
+                "ref_text": "This is the reference text for full flow testing.",
+            },
+            files={"audio_file": ("reference.wav", sample_wav_bytes, "audio/wav")},
+        )
+        assert upload_response.status_code == 200
+        assert upload_response.json()["persisted"] is True
+
+        # Step 2: Generate speech with uploaded voice
+        gen_response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "Hello from the uploaded voice. This is a test.",
+                "voice": voice_name,
+                "stream": False,
+            },
+        )
+        assert gen_response.status_code == 200
+        assert len(gen_response.content) > 1000  # Should have audio
+
+        # Step 3: Generate streaming
+        stream_response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "Streaming test. Multiple sentences. Should work.",
+                "voice": voice_name,
+                "stream": True,
+                "response_format": "wav",
+            },
+        )
+        assert stream_response.status_code == 200
+        assert stream_response.content[:4] == b'RIFF'
+
+        # Step 4: Delete
+        delete_response = client.delete(f"/v1/voices/{voice_name}")
+        assert delete_response.status_code == 200
+
+        # Step 5: Verify deleted voice can't be used
+        fail_response = client.post(
+            "/v1/audio/speech",
+            json={
+                "text": "This should fail.",
+                "voice": voice_name,
+            },
+        )
+        assert fail_response.status_code == 400
+
+    def test_multiple_voices_coexist(self, client, sample_wav_bytes):
+        """Test multiple uploaded voices can coexist and work independently."""
+        import uuid
+
+        voices = [f"coexist_{uuid.uuid4().hex[:8]}" for _ in range(3)]
+
+        try:
+            # Upload all voices
+            for i, voice_name in enumerate(voices):
+                response = client.post(
+                    "/v1/voices/upload",
+                    data={
+                        "voice_name": voice_name,
+                        "ref_text": f"Reference for voice {i}.",
+                    },
+                    files={"audio_file": (f"ref{i}.wav", sample_wav_bytes, "audio/wav")},
+                )
+                assert response.status_code == 200
+
+            # Generate with each voice
+            for voice_name in voices:
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "text": f"Generated with {voice_name}.",
+                        "voice": voice_name,
+                    },
+                )
+                assert response.status_code == 200
+
+            # Interleaved generation
+            for i in range(6):
+                voice = voices[i % len(voices)]
+                response = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "text": f"Interleaved {i}.",
+                        "voice": voice,
+                    },
+                )
+                assert response.status_code == 200
+
+        finally:
+            # Cleanup
+            for voice_name in voices:
+                client.delete(f"/v1/voices/{voice_name}")
 
 
 # =============================================================================

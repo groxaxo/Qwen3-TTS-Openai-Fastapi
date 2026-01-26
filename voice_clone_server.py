@@ -7,20 +7,25 @@ Supports KV cache for voice prompts to reduce latency.
 
 import copy
 import io
+import json
 import os
 import re
+import shutil
 import struct
 import logging
+import threading
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import AsyncGenerator, Optional, Any, List
 
 import torch
 import soundfile as sf
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
+from safetensors.torch import save_file, load_file
 from transformers.cache_utils import DynamicCache
 
 logging.basicConfig(level=logging.INFO)
@@ -31,10 +36,12 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "./models/Qwen3-TTS-12Hz-1.7B-Base")
 REF_AUDIO = os.environ.get("REF_AUDIO", "./voice_refs/hai_reference.wav")
 REF_TEXT = os.environ.get("REF_TEXT", "Yeah so basically I checked the system logs and found a couple of errors. Nothing critical, but you should probably take a look when you get a chance. The server has been running fine otherwise.")
 PORT = int(os.environ.get("PORT", "8881"))
+VOICE_REFS_DIR = Path(os.environ.get("VOICE_REFS_DIR", "./voice_refs"))
 
 # Global state
 model = None
 voices: dict[str, "VoiceCache"] = {}  # voice_name -> VoiceCache
+voices_lock = threading.RLock()  # Thread-safe access to voices dict
 DEFAULT_VOICE = "hai"
 
 
@@ -46,6 +53,191 @@ class VoiceCache:
     past_hidden: Optional[torch.Tensor] = None  # Last hidden state for code predictor
     prefix_length: int = 0  # Length of the cached prefix sequence
     ref_text: str = ""  # Reference text used for this voice
+    ref_audio_path: Optional[str] = None  # Path to reference audio file
+
+
+def get_voice_cache_path(voice_name: str) -> Path:
+    """Get the path for a voice's KV cache safetensors file."""
+    return VOICE_REFS_DIR / f"{voice_name}_kvcache.safetensors"
+
+
+def get_voice_metadata_path(voice_name: str) -> Path:
+    """Get the path for a voice's metadata JSON file."""
+    return VOICE_REFS_DIR / f"{voice_name}_metadata.json"
+
+
+def save_voice_cache_to_disk(voice_name: str, voice_cache: VoiceCache) -> bool:
+    """
+    Save voice KV cache and metadata to disk for persistence across restarts.
+
+    Saves:
+    - KV cache tensors to {voice_name}_kvcache.safetensors
+    - Metadata (ref_text, prefix_length, ref_audio_path) to {voice_name}_metadata.json
+
+    Returns True if successful, False otherwise.
+    """
+    if voice_cache.kv_cache is None:
+        logger.warning(f"No KV cache to save for voice '{voice_name}'")
+        return False
+
+    try:
+        VOICE_REFS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Build tensors dict from KV cache
+        tensors = {}
+        cache = voice_cache.kv_cache
+
+        # Handle DynamicCache structure - try different API versions
+        num_layers = 0
+
+        # New API (transformers >= 4.50): cache.layers with DynamicLayer objects
+        if hasattr(cache, 'layers') and len(cache.layers) > 0:
+            for layer_idx, layer in enumerate(cache.layers):
+                # DynamicLayer has .keys and .values attributes
+                if hasattr(layer, 'keys') and hasattr(layer, 'values'):
+                    tensors[f"key_cache_{layer_idx}"] = layer.keys.cpu()
+                    tensors[f"value_cache_{layer_idx}"] = layer.values.cpu()
+                    num_layers += 1
+                # Fallback: try tuple-like access
+                elif isinstance(layer, (list, tuple)) and len(layer) == 2:
+                    tensors[f"key_cache_{layer_idx}"] = layer[0].cpu()
+                    tensors[f"value_cache_{layer_idx}"] = layer[1].cpu()
+                    num_layers += 1
+
+        # Old API (transformers < 4.36): cache.key_cache and cache.value_cache
+        elif hasattr(cache, 'key_cache') and hasattr(cache, 'value_cache'):
+            for layer_idx in range(len(cache.key_cache)):
+                tensors[f"key_cache_{layer_idx}"] = cache.key_cache[layer_idx].cpu()
+                tensors[f"value_cache_{layer_idx}"] = cache.value_cache[layer_idx].cpu()
+            num_layers = len(cache.key_cache)
+
+        if num_layers == 0:
+            logger.warning(f"No layers found in KV cache for voice '{voice_name}'")
+            return False
+
+        tensors["num_layers"] = torch.tensor([num_layers])
+
+        # Add past_hidden if present
+        if voice_cache.past_hidden is not None:
+            tensors["past_hidden"] = voice_cache.past_hidden.cpu()
+
+        # Add prefix_length as tensor
+        tensors["prefix_length"] = torch.tensor([voice_cache.prefix_length])
+
+        # Save tensors
+        cache_path = get_voice_cache_path(voice_name)
+        save_file(tensors, str(cache_path))
+        logger.info(f"Saved KV cache for '{voice_name}' to {cache_path} ({num_layers} layers)")
+
+        # Save metadata
+        metadata = {
+            "ref_text": voice_cache.ref_text,
+            "prefix_length": voice_cache.prefix_length,
+            "ref_audio_path": voice_cache.ref_audio_path,
+        }
+        metadata_path = get_voice_metadata_path(voice_name)
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        logger.info(f"Saved metadata for '{voice_name}' to {metadata_path}")
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Failed to save voice cache for '{voice_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def load_voice_cache_from_disk(voice_name: str, device: str = "cuda:0") -> Optional[tuple[DynamicCache, Optional[torch.Tensor], int, dict]]:
+    """
+    Load voice KV cache and metadata from disk.
+
+    Returns:
+        Tuple of (kv_cache, past_hidden, prefix_length, metadata) or None if not found/failed
+    """
+    cache_path = get_voice_cache_path(voice_name)
+    metadata_path = get_voice_metadata_path(voice_name)
+
+    if not cache_path.exists():
+        return None
+
+    try:
+        # Load tensors
+        tensors = load_file(str(cache_path))
+
+        # Reconstruct DynamicCache
+        kv_cache = DynamicCache()
+        num_layers = int(tensors["num_layers"].item())
+
+        for layer_idx in range(num_layers):
+            key = tensors[f"key_cache_{layer_idx}"].to(device)
+            value = tensors[f"value_cache_{layer_idx}"].to(device)
+            kv_cache.update(key, value, layer_idx)
+
+        # Load past_hidden
+        past_hidden = None
+        if "past_hidden" in tensors:
+            past_hidden = tensors["past_hidden"].to(device)
+
+        # Load prefix_length
+        prefix_length = int(tensors["prefix_length"].item())
+
+        # Load metadata
+        metadata = {}
+        if metadata_path.exists():
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+
+        logger.info(f"Loaded KV cache for '{voice_name}' from disk (prefix_length={prefix_length})")
+        return kv_cache, past_hidden, prefix_length, metadata
+
+    except Exception as e:
+        logger.error(f"Failed to load voice cache for '{voice_name}': {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+
+def delete_voice_cache_from_disk(voice_name: str) -> bool:
+    """Delete voice cache and metadata files from disk."""
+    success = True
+
+    cache_path = get_voice_cache_path(voice_name)
+    if cache_path.exists():
+        try:
+            cache_path.unlink()
+            logger.info(f"Deleted cache file: {cache_path}")
+        except Exception as e:
+            logger.error(f"Failed to delete cache file: {e}")
+            success = False
+
+    metadata_path = get_voice_metadata_path(voice_name)
+    if metadata_path.exists():
+        try:
+            metadata_path.unlink()
+            logger.info(f"Deleted metadata file: {metadata_path}")
+        except Exception as e:
+            logger.error(f"Failed to delete metadata file: {e}")
+            success = False
+
+    return success
+
+
+def discover_cached_voices() -> List[str]:
+    """Discover all voices with saved KV caches on disk."""
+    if not VOICE_REFS_DIR.exists():
+        return []
+
+    voice_names = []
+    for cache_file in VOICE_REFS_DIR.glob("*_kvcache.safetensors"):
+        voice_name = cache_file.stem.replace("_kvcache", "")
+        metadata_path = get_voice_metadata_path(voice_name)
+        # Only include if metadata exists (complete cache)
+        if metadata_path.exists():
+            voice_names.append(voice_name)
+
+    return voice_names
 
 
 @torch.inference_mode()
@@ -260,12 +452,15 @@ def clone_kv_cache(cache: DynamicCache) -> DynamicCache:
 
 
 def load_model():
-    """Load the voice cloning model."""
+    """Load the voice cloning model and restore cached voices."""
     global model, voices
 
     from qwen_tts import Qwen3TTSModel
 
     logger.info(f"Loading model from {MODEL_PATH}...")
+
+    # Ensure voice_refs directory exists
+    VOICE_REFS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Try Flash Attention 2, fall back to eager
     try:
@@ -286,25 +481,70 @@ def load_model():
         )
         logger.info("Model loaded with eager attention.")
 
-    # Load default voice with KV cache
-    logger.info(f"Creating default voice clone prompt ({DEFAULT_VOICE})...")
-    voice_prompt = model.create_voice_clone_prompt(
-        ref_audio=REF_AUDIO,
-        ref_text=REF_TEXT,
-        x_vector_only_mode=False,
-    )
+    # Auto-load cached voices from disk
+    cached_voice_names = discover_cached_voices()
+    logger.info(f"Discovered {len(cached_voice_names)} cached voices on disk: {cached_voice_names}")
 
-    logger.info(f"Computing KV cache for default voice...")
-    kv_cache, past_hidden, prefix_length = compute_voice_kv_cache(model, voice_prompt, REF_TEXT)
+    for voice_name in cached_voice_names:
+        try:
+            result = load_voice_cache_from_disk(voice_name)
+            if result is None:
+                continue
 
-    voices[DEFAULT_VOICE] = VoiceCache(
-        prompt=voice_prompt,
-        kv_cache=kv_cache,
-        past_hidden=past_hidden,
-        prefix_length=prefix_length,
-        ref_text=REF_TEXT,
-    )
-    logger.info(f"Default voice '{DEFAULT_VOICE}' ready (prefix_length={prefix_length}).")
+            kv_cache, past_hidden, prefix_length, metadata = result
+            ref_text = metadata.get("ref_text", "")
+            ref_audio_path = metadata.get("ref_audio_path")
+
+            # Recreate voice prompt from reference audio if it still exists
+            if ref_audio_path and os.path.exists(ref_audio_path):
+                voice_prompt = model.create_voice_clone_prompt(
+                    ref_audio=ref_audio_path,
+                    ref_text=ref_text,
+                    x_vector_only_mode=False,
+                )
+                voices[voice_name] = VoiceCache(
+                    prompt=voice_prompt,
+                    kv_cache=kv_cache,
+                    past_hidden=past_hidden,
+                    prefix_length=prefix_length,
+                    ref_text=ref_text,
+                    ref_audio_path=ref_audio_path,
+                )
+                logger.info(f"Restored voice '{voice_name}' from cache (prefix_length={prefix_length})")
+            else:
+                logger.warning(f"Reference audio not found for cached voice '{voice_name}': {ref_audio_path}")
+
+        except Exception as e:
+            logger.error(f"Failed to restore cached voice '{voice_name}': {e}")
+
+    # Load default voice if not already loaded from cache
+    if DEFAULT_VOICE not in voices:
+        logger.info(f"Creating default voice clone prompt ({DEFAULT_VOICE})...")
+        voice_prompt = model.create_voice_clone_prompt(
+            ref_audio=REF_AUDIO,
+            ref_text=REF_TEXT,
+            x_vector_only_mode=False,
+        )
+
+        logger.info(f"Computing KV cache for default voice...")
+        kv_cache, past_hidden, prefix_length = compute_voice_kv_cache(model, voice_prompt, REF_TEXT)
+
+        voices[DEFAULT_VOICE] = VoiceCache(
+            prompt=voice_prompt,
+            kv_cache=kv_cache,
+            past_hidden=past_hidden,
+            prefix_length=prefix_length,
+            ref_text=REF_TEXT,
+            ref_audio_path=REF_AUDIO,
+        )
+
+        # Save default voice cache to disk for persistence
+        save_voice_cache_to_disk(DEFAULT_VOICE, voices[DEFAULT_VOICE])
+        logger.info(f"Default voice '{DEFAULT_VOICE}' ready (prefix_length={prefix_length}).")
+    else:
+        logger.info(f"Default voice '{DEFAULT_VOICE}' restored from cache.")
+
+    logger.info(f"Total voices loaded: {len(voices)}")
 
 
 @asynccontextmanager
@@ -459,11 +699,16 @@ async def health():
 async def list_voices():
     """List all loaded voices with KV cache status."""
     voice_info = {}
-    for name, cache in voices.items():
-        voice_info[name] = {
-            "kv_cached": cache.kv_cache is not None,
-            "prefix_length": cache.prefix_length,
-        }
+    with voices_lock:
+        for name, cache in voices.items():
+            # Check if persisted on disk
+            persisted = get_voice_cache_path(name).exists()
+            voice_info[name] = {
+                "kv_cached": cache.kv_cache is not None,
+                "prefix_length": cache.prefix_length,
+                "ref_audio_path": cache.ref_audio_path,
+                "persisted": persisted,
+            }
     return {
         "voices": voice_info,
         "default": DEFAULT_VOICE,
@@ -472,7 +717,7 @@ async def list_voices():
 
 @app.post("/v1/voices/load")
 async def load_voice(request: LoadVoiceRequest):
-    """Load a new voice from reference audio with KV cache precomputation."""
+    """Load a new voice from reference audio with KV cache precomputation and persistence."""
     global model, voices
 
     if model is None:
@@ -492,22 +737,176 @@ async def load_voice(request: LoadVoiceRequest):
         logger.info(f"Computing KV cache for voice '{request.voice_name}'...")
         kv_cache, past_hidden, prefix_length = compute_voice_kv_cache(model, voice_prompt, request.ref_text)
 
-        voices[request.voice_name] = VoiceCache(
+        voice_cache = VoiceCache(
             prompt=voice_prompt,
             kv_cache=kv_cache,
             past_hidden=past_hidden,
             prefix_length=prefix_length,
             ref_text=request.ref_text,
+            ref_audio_path=request.ref_audio_path,
         )
-        logger.info(f"Voice '{request.voice_name}' loaded successfully (prefix_length={prefix_length}).")
+
+        # Thread-safe addition to voices dict
+        with voices_lock:
+            voices[request.voice_name] = voice_cache
+
+        # Persist to disk (outside lock - file I/O is slow)
+        saved = save_voice_cache_to_disk(request.voice_name, voice_cache)
+
+        logger.info(f"Voice '{request.voice_name}' loaded successfully (prefix_length={prefix_length}, persisted={saved}).")
         return {
             "status": "ok",
             "voice_name": request.voice_name,
             "kv_cached": kv_cache is not None,
             "prefix_length": prefix_length,
+            "persisted": saved,
         }
     except Exception as e:
         logger.error(f"Failed to load voice: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/voices/upload")
+async def upload_voice(
+    audio_file: UploadFile = File(..., description="Reference audio file (wav/mp3)"),
+    voice_name: str = Form(..., description="Name for this voice"),
+    ref_text: str = Form(..., description="Transcript of the reference audio"),
+):
+    """
+    Upload a voice reference audio file and create a persistent voice with KV cache.
+
+    The audio file is saved to the voice_refs directory, and KV cache is computed
+    and persisted to disk so the voice survives server restarts.
+    """
+    global model, voices
+
+    if model is None:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    # Validate voice name
+    if not voice_name or not voice_name.strip():
+        raise HTTPException(status_code=400, detail="voice_name is required")
+    voice_name = voice_name.strip()
+
+    # Validate file type
+    allowed_extensions = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
+    file_ext = Path(audio_file.filename).suffix.lower() if audio_file.filename else ""
+    if file_ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type '{file_ext}'. Allowed: {allowed_extensions}"
+        )
+
+    try:
+        # Ensure voice_refs directory exists
+        VOICE_REFS_DIR.mkdir(parents=True, exist_ok=True)
+
+        # Save uploaded file
+        audio_path = VOICE_REFS_DIR / f"{voice_name}_reference{file_ext}"
+        with open(audio_path, "wb") as f:
+            content = await audio_file.read()
+            f.write(content)
+        logger.info(f"Saved uploaded audio to {audio_path}")
+
+        # Create voice prompt
+        logger.info(f"Creating voice clone prompt for '{voice_name}'...")
+        voice_prompt = model.create_voice_clone_prompt(
+            ref_audio=str(audio_path),
+            ref_text=ref_text,
+            x_vector_only_mode=False,
+        )
+
+        # Compute KV cache
+        logger.info(f"Computing KV cache for voice '{voice_name}'...")
+        kv_cache, past_hidden, prefix_length = compute_voice_kv_cache(model, voice_prompt, ref_text)
+
+        # Create voice cache
+        voice_cache = VoiceCache(
+            prompt=voice_prompt,
+            kv_cache=kv_cache,
+            past_hidden=past_hidden,
+            prefix_length=prefix_length,
+            ref_text=ref_text,
+            ref_audio_path=str(audio_path),
+        )
+
+        # Thread-safe addition to voices dict
+        with voices_lock:
+            voices[voice_name] = voice_cache
+
+        # Persist to disk (outside lock - file I/O is slow)
+        saved = save_voice_cache_to_disk(voice_name, voice_cache)
+
+        logger.info(f"Voice '{voice_name}' uploaded and cached (prefix_length={prefix_length}, persisted={saved}).")
+        return {
+            "status": "ok",
+            "voice_name": voice_name,
+            "audio_path": str(audio_path),
+            "kv_cached": kv_cache is not None,
+            "prefix_length": prefix_length,
+            "persisted": saved,
+        }
+
+    except Exception as e:
+        logger.error(f"Failed to upload voice: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/v1/voices/{voice_name}")
+async def delete_voice(voice_name: str):
+    """
+    Delete a voice and its cached data from memory and disk.
+
+    Note: The default voice cannot be deleted.
+    """
+    global voices
+
+    if voice_name == DEFAULT_VOICE:
+        raise HTTPException(status_code=400, detail=f"Cannot delete default voice '{DEFAULT_VOICE}'")
+
+    # Thread-safe check and removal from voices dict
+    with voices_lock:
+        if voice_name not in voices:
+            raise HTTPException(status_code=404, detail=f"Voice '{voice_name}' not found")
+
+        # Get audio path before removing from memory
+        voice_cache = voices[voice_name]
+        audio_path = voice_cache.ref_audio_path
+
+        # Remove from memory
+        del voices[voice_name]
+        logger.info(f"Removed voice '{voice_name}' from memory")
+
+    # File operations outside lock (slow I/O)
+    try:
+        # Delete cache files from disk
+        cache_deleted = delete_voice_cache_from_disk(voice_name)
+
+        # Optionally delete the audio file (only if it's in our voice_refs dir)
+        audio_deleted = False
+        if audio_path:
+            audio_path_obj = Path(audio_path)
+            if audio_path_obj.exists() and VOICE_REFS_DIR in audio_path_obj.parents or audio_path_obj.parent == VOICE_REFS_DIR:
+                try:
+                    audio_path_obj.unlink()
+                    audio_deleted = True
+                    logger.info(f"Deleted audio file: {audio_path}")
+                except Exception as e:
+                    logger.warning(f"Failed to delete audio file: {e}")
+
+        return {
+            "status": "ok",
+            "voice_name": voice_name,
+            "cache_deleted": cache_deleted,
+            "audio_deleted": audio_deleted,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete voice: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -519,11 +918,14 @@ async def generate_speech_endpoint(request: TTSRequest):
     if model is None:
         raise HTTPException(status_code=503, detail="Model not loaded")
 
-    # Resolve voice
+    # Resolve voice (thread-safe access)
     voice_name = request.voice or DEFAULT_VOICE
-    if voice_name not in voices:
-        raise HTTPException(status_code=400, detail=f"Voice '{voice_name}' not loaded. Available: {list(voices.keys())}")
-    voice_cache = voices[voice_name]
+    with voices_lock:
+        if voice_name not in voices:
+            available = list(voices.keys())
+            raise HTTPException(status_code=400, detail=f"Voice '{voice_name}' not loaded. Available: {available}")
+        # Get reference to voice_cache - safe to use outside lock since VoiceCache is immutable
+        voice_cache = voices[voice_name]
 
     # Handle streaming mode
     if request.stream:
