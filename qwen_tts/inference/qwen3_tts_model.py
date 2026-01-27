@@ -476,6 +476,9 @@ class Qwen3TTSModel:
         x_vector_only_mode: Union[bool, List[bool]] = False,
         voice_clone_prompt: Optional[Union[Dict[str, Any], List[VoiceClonePromptItem]]] = None,
         non_streaming_mode: bool = False,
+        voice_kv_cache: Optional[Any] = None,
+        voice_past_hidden: Optional[torch.Tensor] = None,
+        voice_prefix_length: int = 0,
         **kwargs,
     ) -> Tuple[List[np.ndarray], int]:
         """
@@ -600,12 +603,21 @@ class Qwen3TTSModel:
 
         gen_kwargs = self._merge_generate_kwargs(**kwargs)
 
+        # Pass KV cache parameters if provided for voice prefix acceleration
+        kv_cache_params = {}
+        if voice_kv_cache is not None:
+            kv_cache_params["voice_kv_cache"] = voice_kv_cache
+            kv_cache_params["voice_prefix_length"] = voice_prefix_length
+        if voice_past_hidden is not None:
+            kv_cache_params["voice_past_hidden"] = voice_past_hidden
+
         talker_codes_list, _ = self.model.generate(
             input_ids=input_ids,
             ref_ids=ref_ids,
             voice_clone_prompt=voice_clone_prompt_dict,
             languages=languages,
             non_streaming_mode=non_streaming_mode,
+            **kv_cache_params,
             **gen_kwargs,
         )
 

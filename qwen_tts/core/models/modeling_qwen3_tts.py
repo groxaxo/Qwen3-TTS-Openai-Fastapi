@@ -1703,9 +1703,15 @@ class Qwen3TTSTalkerForConditionalGeneration(Qwen3TTSTalkerTextPreTrainedModel, 
                 rope_deltas = rope_deltas - delta0
                 self.rope_deltas = rope_deltas
             else:
-                batch_size, seq_length = input_ids.shape
+                # Use inputs_embeds shape when input_ids is None (e.g., when using KV cache with embeds)
+                if input_ids is not None:
+                    batch_size, seq_length = input_ids.shape
+                    device = input_ids.device
+                else:
+                    batch_size, seq_length = inputs_embeds.shape[:2]
+                    device = inputs_embeds.device
                 delta = cache_position[0] + self.rope_deltas if cache_position is not None else 0
-                position_ids = torch.arange(seq_length, device=input_ids.device)
+                position_ids = torch.arange(seq_length, device=device)
                 position_ids = position_ids.view(1, -1).expand(batch_size, -1)
                 position_ids = position_ids.add(delta)
                 position_ids = position_ids.unsqueeze(0).expand(3, -1, -1)
@@ -2039,6 +2045,9 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         subtalker_temperature: float = 0.9,
         eos_token_id: Optional[int] = None,
         repetition_penalty: float = 1.05,
+        voice_kv_cache: Optional["DynamicCache"] = None,
+        voice_past_hidden: Optional[torch.Tensor] = None,
+        voice_prefix_length: int = 0,
         **kwargs,
     ):
         talker_kwargs = {
@@ -2268,14 +2277,54 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
         padded_hiddens[padding_mask] = pad_embedding_vector
         trailing_text_hiddens = padded_hiddens
 
-        # forward
-        talker_result = self.talker.generate(
+        # forward - with optional KV cache for voice prefix acceleration
+        generate_kwargs = dict(
             inputs_embeds=talker_input_embeds,
             attention_mask=talker_attention_mask,
             trailing_text_hidden=trailing_text_hiddens,
             tts_pad_embed=tts_pad_embed,
             **talker_kwargs,
         )
+
+        # If voice KV cache is provided, use it for prefix acceleration
+        if voice_kv_cache is not None:
+            current_batch_size = talker_input_embeds.shape[0]
+
+            # Expand KV cache from batch_size=1 to current batch size if needed
+            # KV cache tensors have shape [batch, num_heads, seq_len, head_dim]
+            if hasattr(voice_kv_cache, 'key_cache') and len(voice_kv_cache.key_cache) > 0:
+                cached_batch_size = voice_kv_cache.key_cache[0].shape[0]
+                if cached_batch_size == 1 and current_batch_size > 1:
+                    from transformers.cache_utils import DynamicCache
+                    expanded_cache = DynamicCache()
+                    for layer_idx in range(len(voice_kv_cache.key_cache)):
+                        # Expand and clone to avoid broadcasting issues
+                        expanded_key = voice_kv_cache.key_cache[layer_idx].expand(current_batch_size, -1, -1, -1).clone()
+                        expanded_value = voice_kv_cache.value_cache[layer_idx].expand(current_batch_size, -1, -1, -1).clone()
+                        expanded_cache.key_cache.append(expanded_key)
+                        expanded_cache.value_cache.append(expanded_value)
+                    generate_kwargs["past_key_values"] = expanded_cache
+                else:
+                    generate_kwargs["past_key_values"] = voice_kv_cache
+            else:
+                generate_kwargs["past_key_values"] = voice_kv_cache
+
+            # Extend attention mask to include the cached prefix
+            if voice_prefix_length > 0 and talker_attention_mask is not None:
+                prefix_mask = torch.ones(
+                    (current_batch_size, voice_prefix_length),
+                    device=talker_attention_mask.device,
+                    dtype=talker_attention_mask.dtype
+                )
+                generate_kwargs["attention_mask"] = torch.cat([prefix_mask, talker_attention_mask], dim=1)
+
+        if voice_past_hidden is not None:
+            # Expand past_hidden to match batch size if needed
+            if voice_past_hidden.shape[0] == 1 and talker_input_embeds.shape[0] > 1:
+                voice_past_hidden = voice_past_hidden.expand(talker_input_embeds.shape[0], -1, -1).clone()
+            generate_kwargs["past_hidden"] = voice_past_hidden
+
+        talker_result = self.talker.generate(**generate_kwargs)
 
         talker_codes = torch.stack([hid[-1] for hid in talker_result.hidden_states if hid[-1] is not None], dim=1)
         talker_hidden_states = torch.cat([hid[0][-1][:, -1:] for hid in talker_result.hidden_states], dim=1)[:, :-1]
