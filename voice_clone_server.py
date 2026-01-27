@@ -6,6 +6,7 @@ Supports KV cache for voice prompts to reduce latency.
 Supports multiple models (1.7B and 0.6B) with hot-swapping.
 """
 
+import asyncio
 import copy
 import io
 import json
@@ -780,7 +781,11 @@ async def generate_speech_streaming(
     tts_model: Any,
     use_cache: bool = True,
 ) -> AsyncGenerator[tuple[np.ndarray, int], None]:
-    """Generate speech with sentence-level streaming and optional KV cache acceleration."""
+    """Generate speech with sentence-level streaming and optional KV cache acceleration.
+
+    This function uses asyncio.to_thread() to run the blocking PyTorch TTS generation
+    in a thread pool, preventing the async event loop from being blocked.
+    """
     # Split text into sentences
     sentence_pattern = r'(?<=[.!?。！？])\s+'
     sentences = re.split(sentence_pattern, text.strip())
@@ -791,7 +796,9 @@ async def generate_speech_streaming(
 
     for sentence in sentences:
         try:
-            wavs, sr = generate_with_kv_cache(
+            # Run the blocking TTS generation in a thread pool to avoid blocking the event loop
+            wavs, sr = await asyncio.to_thread(
+                generate_with_kv_cache,
                 text=sentence,
                 language=language,
                 voice_cache=voice_cache,
