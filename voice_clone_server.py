@@ -24,7 +24,7 @@ from typing import AsyncGenerator, Optional, Any, List, Literal
 import torch
 import soundfile as sf
 import numpy as np
-from fastapi import FastAPI, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from safetensors.torch import save_file, load_file
@@ -35,8 +35,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configuration from environment
-MODEL_PATH_LARGE = os.environ.get("MODEL_PATH", os.environ.get("MODEL_PATH_LARGE", "./models/Qwen3-TTS-12Hz-1.7B-Base"))
-MODEL_PATH_SMALL = os.environ.get("MODEL_PATH_SMALL", "./models/Qwen3-TTS-12Hz-0.6B-Base")
+MODEL_PATH_LARGE = os.environ.get("MODEL_PATH", os.environ.get("MODEL_PATH_LARGE", "/models/Qwen3-TTS-12Hz-1.7B-Base"))
+MODEL_PATH_SMALL = os.environ.get("MODEL_PATH_SMALL", "/models/Qwen3-TTS-12Hz-0.6B-Base")
 REF_AUDIO = os.environ.get("REF_AUDIO", "./voice_refs/hai_reference.wav")
 REF_TEXT = os.environ.get("REF_TEXT", "Yeah so basically I checked the system logs and found a couple of errors. Nothing critical, but you should probably take a look when you get a chance. The server has been running fine otherwise.")
 PORT = int(os.environ.get("PORT", "8881"))
@@ -45,11 +45,10 @@ VOICE_REFS_DIR = Path(os.environ.get("VOICE_REFS_DIR", "./voice_refs"))
 # Model configuration
 # TEMPORARY: Large model disabled to rule out model swapping issues
 MODEL_CONFIGS = {
-    # "large": {"path": MODEL_PATH_LARGE, "name": "Qwen3-TTS-12Hz-1.7B-Base"},  # DISABLED
+    "large": {"path": MODEL_PATH_LARGE, "name": "Qwen3-TTS-12Hz-1.7B-Base"},
     "small": {"path": MODEL_PATH_SMALL, "name": "Qwen3-TTS-12Hz-0.6B-Base"},
 }
-# Force small model as default since large is disabled
-DEFAULT_MODEL = "small"  # os.environ.get("DEFAULT_MODEL", "large")
+DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "small")
 MAX_LOADED_MODELS = int(os.environ.get("MAX_LOADED_MODELS", "1"))
 
 # Global state - lazy loading with LRU eviction
@@ -932,102 +931,7 @@ async def load_voice(request: LoadVoiceRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/v1/voices/upload")
-async def upload_voice(
-    audio_file: UploadFile = File(..., description="Reference audio file (wav/mp3)"),
-    voice_name: str = Form(..., description="Name for this voice"),
-    ref_text: str = Form(..., description="Transcript of the reference audio"),
-    model: Optional[str] = Form(None, description="Model to load voice for (large or small)"),
-):
-    """
-    Upload a voice reference audio file and create a persistent voice with KV cache.
-
-    The audio file is saved to the voice_refs directory, and KV cache is computed
-    and persisted to disk so the voice survives server restarts.
-    """
-    global models, voices
-
-    # Lazy load model if needed
-    model_name = model or DEFAULT_MODEL
-    try:
-        tts_model = ensure_model_loaded(model_name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=500, detail=f"Failed to load model: {e}")
-
-    # Validate voice name
-    if not voice_name or not voice_name.strip():
-        raise HTTPException(status_code=400, detail="voice_name is required")
-    voice_name = voice_name.strip()
-
-    # Validate file type
-    allowed_extensions = {".wav", ".mp3", ".flac", ".ogg", ".m4a"}
-    file_ext = Path(audio_file.filename).suffix.lower() if audio_file.filename else ""
-    if file_ext not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Invalid file type '{file_ext}'. Allowed: {allowed_extensions}"
-        )
-
-    try:
-        # Ensure voice_refs directory exists
-        VOICE_REFS_DIR.mkdir(parents=True, exist_ok=True)
-
-        # Save uploaded file
-        audio_path = VOICE_REFS_DIR / f"{voice_name}_reference{file_ext}"
-        with open(audio_path, "wb") as f:
-            content = await audio_file.read()
-            f.write(content)
-        logger.info(f"Saved uploaded audio to {audio_path}")
-
-        # Create voice prompt
-        logger.info(f"Creating voice clone prompt for '{voice_name}' (model={model_name})...")
-        voice_prompt = tts_model.create_voice_clone_prompt(
-            ref_audio=str(audio_path),
-            ref_text=ref_text,
-            x_vector_only_mode=False,
-        )
-
-        # Compute KV cache
-        logger.info(f"Computing KV cache for voice '{voice_name}' (model={model_name})...")
-        kv_cache, past_hidden, prefix_length = compute_voice_kv_cache(tts_model, voice_prompt, ref_text)
-
-        # Create voice cache
-        voice_cache = VoiceCache(
-            prompt=voice_prompt,
-            kv_cache=kv_cache,
-            past_hidden=past_hidden,
-            prefix_length=prefix_length,
-            ref_text=ref_text,
-            ref_audio_path=str(audio_path),
-        )
-
-        # Thread-safe addition to voices dict
-        with voices_lock:
-            if model_name not in voices:
-                voices[model_name] = {}
-            voices[model_name][voice_name] = voice_cache
-
-        # Persist to disk (outside lock - file I/O is slow)
-        saved = save_voice_cache_to_disk(voice_name, voice_cache, model_name)
-
-        logger.info(f"Voice '{voice_name}' uploaded for model '{model_name}' (prefix_length={prefix_length}, persisted={saved}).")
-        return {
-            "status": "ok",
-            "voice_name": voice_name,
-            "model": model_name,
-            "audio_path": str(audio_path),
-            "kv_cached": kv_cache is not None,
-            "prefix_length": prefix_length,
-            "persisted": saved,
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to upload voice: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+# Upload endpoint removed - requires python-multipart
 
 
 @app.delete("/v1/voices/{voice_name}")
@@ -1139,22 +1043,15 @@ async def generate_speech_endpoint(request: TTSRequest):
             },
         )
 
-    # Non-streaming mode - use KV cache if available and requested
+    # Non-streaming mode - always use generate_with_kv_cache which handles prompt cloning
     try:
-        if request.use_kv_cache and voice_cache.kv_cache is not None:
-            wavs, sr = generate_with_kv_cache(
-                text=request.text,
-                language=request.language,
-                voice_cache=voice_cache,
-                tts_model=tts_model,
-                use_cache=True,
-            )
-        else:
-            wavs, sr = tts_model.generate_voice_clone(
-                text=request.text,
-                language=request.language,
-                voice_clone_prompt=voice_cache.prompt,
-            )
+        wavs, sr = generate_with_kv_cache(
+            text=request.text,
+            language=request.language,
+            voice_cache=voice_cache,
+            tts_model=tts_model,
+            use_cache=request.use_kv_cache,
+        )
 
         audio = wavs[0]
 

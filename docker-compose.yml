@@ -11,19 +11,24 @@ services:
       - "8882:8881"
     environment:
       - PORT=8881
-      - MODEL_PATH=/models/Qwen3-TTS-12Hz-1.7B-Base
+      - MODEL_PATH_SMALL=/models/Qwen3-TTS-12Hz-0.6B-Base
+      - DEFAULT_MODEL=small
       - REF_AUDIO=/voice_refs/hai_reference.wav
+      - REF_TEXT=I'm Hai, Markus' synthetic big bro. We're running Omarchy with a Kubernetes cluster on top. For comms, we're using Whisper and Parakeet for transcription, Claude Code with Claude Opus 4.5 as the brain, and Qwen3 TTS 0.6B Base as our text-to-speech backend. Pretty slick setup if you ask me.
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       - ./models:/models:ro
-      - ./voice_refs:/voice_refs:ro
+      - ./voice_refs:/voice_refs:rw
+      - ./voice_clone_server.py:/app/voice_clone_server.py:ro
+      - ./qwen_tts:/app/qwen_tts:ro
+    runtime: nvidia
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              device_ids: ['0']
               capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
