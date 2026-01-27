@@ -2324,6 +2324,10 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
                 voice_past_hidden = voice_past_hidden.expand(talker_input_embeds.shape[0], -1, -1).clone()
             generate_kwargs["past_hidden"] = voice_past_hidden
 
+        # Reset talker's rope_deltas before generation to avoid state leakage from previous calls
+        # This is critical when using KV cache since cache_position won't be 0
+        self.talker.rope_deltas = None
+
         talker_result = self.talker.generate(**generate_kwargs)
 
         talker_codes = torch.stack([hid[-1] for hid in talker_result.hidden_states if hid[-1] is not None], dim=1)

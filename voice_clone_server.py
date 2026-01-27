@@ -29,6 +29,7 @@ from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from safetensors.torch import save_file, load_file
 from transformers.cache_utils import DynamicCache
+from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -447,8 +448,6 @@ def clone_voice_prompt(prompt: List[Any]) -> List[Any]:
     internal operations, which could cause quality degradation (stuttering,
     hallucinations) on subsequent generations.
     """
-    from qwen_tts.inference.qwen3_tts_model import VoiceClonePromptItem
-
     cloned = []
     for item in prompt:
         cloned.append(VoiceClonePromptItem(
@@ -680,7 +679,7 @@ class TTSRequest(BaseModel):
     stream: bool = False
     response_format: str = "wav"  # wav or pcm
     voice: Optional[str] = None  # voice name, defaults to DEFAULT_VOICE
-    use_kv_cache: bool = True  # whether to use KV cache acceleration
+    use_kv_cache: bool = False  # KV cache disabled - needs architectural fixes for prefix caching
     model: Optional[str] = None  # model to use: "large" (1.7B) or "small" (0.6B), defaults to DEFAULT_MODEL
 
 
