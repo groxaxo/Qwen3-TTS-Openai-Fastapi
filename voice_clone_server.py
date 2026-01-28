@@ -781,35 +781,30 @@ async def generate_speech_streaming(
     tts_model: Any,
     use_cache: bool = True,
 ) -> AsyncGenerator[tuple[np.ndarray, int], None]:
-    """Generate speech with sentence-level streaming and optional KV cache acceleration.
+    """Generate speech and stream audio in chunks.
 
-    This function uses asyncio.to_thread() to run the blocking PyTorch TTS generation
-    in a thread pool, preventing the async event loop from being blocked.
+    This generates all audio at once (avoiding pauses between sentences) then
+    streams the result in chunks for faster time-to-first-audio.
     """
-    # Split text into sentences
-    sentence_pattern = r'(?<=[.!?。！？])\s+'
-    sentences = re.split(sentence_pattern, text.strip())
-    sentences = [s.strip() for s in sentences if s.strip()]
-
-    if not sentences:
-        sentences = [text]
-
-    for sentence in sentences:
-        try:
-            # Run the blocking TTS generation in a thread pool to avoid blocking the event loop
-            wavs, sr = await asyncio.to_thread(
-                generate_with_kv_cache,
-                text=sentence,
-                language=language,
-                voice_cache=voice_cache,
-                tts_model=tts_model,
-                use_cache=use_cache,
-            )
-            if wavs and len(wavs[0]) > 0:
-                yield wavs[0], sr
-        except Exception as e:
-            logger.error(f"Error generating sentence: {e}")
-            continue
+    try:
+        # Generate all audio at once to avoid pauses between sentences
+        wavs, sr = await asyncio.to_thread(
+            generate_with_kv_cache,
+            text=text,
+            language=language,
+            voice_cache=voice_cache,
+            tts_model=tts_model,
+            use_cache=use_cache,
+        )
+        if wavs and len(wavs[0]) > 0:
+            audio = wavs[0]
+            # Stream in chunks of ~0.5 seconds (12000 samples at 24kHz)
+            chunk_size = 12000
+            for i in range(0, len(audio), chunk_size):
+                yield audio[i:i + chunk_size], sr
+    except Exception as e:
+        logger.error(f"Error generating speech: {e}")
+        return
 
 
 @app.get("/health")
