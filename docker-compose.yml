@@ -96,6 +96,7 @@ services:
       - WORKERS=1
       - CORS_ORIGINS=*
       - TTS_BACKEND=official
+      - TTS_MODEL_NAME=Qwen/Qwen3-TTS-12Hz-1.7B-Base
     volumes:
       - ~/.cache/huggingface:/home/appuser/.cache/huggingface
     restart: unless-stopped

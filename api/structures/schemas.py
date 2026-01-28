@@ -101,3 +101,65 @@ class VoiceInfo(BaseModel):
     name: str = Field(..., description="Voice display name")
     language: Optional[str] = Field(None, description="Primary language of the voice")
     description: Optional[str] = Field(None, description="Voice description")
+
+
+class VoiceCloneRequest(BaseModel):
+    """Request schema for voice cloning endpoint."""
+
+    input: str = Field(
+        ...,
+        description="The text to generate audio for using the cloned voice.",
+        max_length=4096,
+    )
+    ref_audio: str = Field(
+        ...,
+        description="Base64-encoded reference audio file (WAV, MP3, etc.).",
+    )
+    ref_text: Optional[str] = Field(
+        default=None,
+        description="Transcript of the reference audio. Required for ICL mode, optional for x-vector mode.",
+        max_length=4096,
+    )
+    x_vector_only_mode: bool = Field(
+        default=False,
+        description="If True, use x-vector only mode (no ref_text needed). If False, use ICL mode (ref_text required).",
+    )
+    language: Optional[str] = Field(
+        default="Auto",
+        description="Language code for TTS. If not provided, will auto-detect.",
+    )
+    response_format: Literal["mp3", "opus", "aac", "flac", "wav", "pcm"] = Field(
+        default="mp3",
+        description="The format to return audio in.",
+    )
+    speed: float = Field(
+        default=1.0,
+        ge=0.25,
+        le=4.0,
+        description="The speed of the generated audio. Select a value from 0.25 to 4.0.",
+    )
+    normalization_options: Optional[NormalizationOptions] = Field(
+        default_factory=NormalizationOptions,
+        description="Options for the text normalization system",
+    )
+
+
+class VoiceCloneCapabilities(BaseModel):
+    """Response schema for voice cloning capabilities endpoint."""
+
+    supported: bool = Field(
+        ...,
+        description="Whether voice cloning is supported by the current backend.",
+    )
+    model_type: str = Field(
+        ...,
+        description="The type of model loaded (base or customvoice).",
+    )
+    icl_mode_available: bool = Field(
+        ...,
+        description="Whether ICL (In-Context Learning) mode is available.",
+    )
+    x_vector_mode_available: bool = Field(
+        ...,
+        description="Whether x-vector only mode is available.",
+    )

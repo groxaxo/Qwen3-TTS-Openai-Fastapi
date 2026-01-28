@@ -5,15 +5,24 @@ OpenAI-compatible router for text-to-speech API.
 Implements endpoints compatible with OpenAI's TTS API specification.
 """
 
+import base64
+import io
 import logging
 import time
 from typing import List, Optional
 
 import numpy as np
+import soundfile as sf
 from fastapi import APIRouter, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
-from ..structures.schemas import OpenAISpeechRequest, ModelInfo, VoiceInfo
+from ..structures.schemas import (
+    OpenAISpeechRequest,
+    ModelInfo,
+    VoiceInfo,
+    VoiceCloneRequest,
+    VoiceCloneCapabilities,
+)
 from ..services.text_processing import normalize_text
 from ..services.audio_encoding import encode_audio, get_content_type, DEFAULT_SAMPLE_RATE
 
@@ -349,3 +358,166 @@ async def list_voices():
             "voices": [v.model_dump() for v in default_voices] + [v.model_dump() for v in openai_voices],
             "languages": default_languages,
         }
+
+
+@router.get("/audio/voice-clone/capabilities")
+async def get_voice_clone_capabilities():
+    """
+    Get voice cloning capabilities of the current backend.
+
+    Returns whether voice cloning is supported and what modes are available.
+    Voice cloning requires the Base model (Qwen3-TTS-12Hz-1.7B-Base).
+    """
+    try:
+        backend = await get_tts_backend()
+
+        supports_cloning = backend.supports_voice_cloning()
+        model_type = backend.get_model_type() if hasattr(backend, 'get_model_type') else "unknown"
+
+        return VoiceCloneCapabilities(
+            supported=supports_cloning,
+            model_type=model_type,
+            icl_mode_available=supports_cloning,
+            x_vector_mode_available=supports_cloning,
+        )
+
+    except Exception as e:
+        logger.warning(f"Could not get voice clone capabilities: {e}")
+        return VoiceCloneCapabilities(
+            supported=False,
+            model_type="unknown",
+            icl_mode_available=False,
+            x_vector_mode_available=False,
+        )
+
+
+@router.post("/audio/voice-clone")
+async def create_voice_clone(
+    request: VoiceCloneRequest,
+    client_request: Request,
+):
+    """
+    Clone a voice from reference audio and generate speech.
+
+    This endpoint requires the Base model (Qwen3-TTS-12Hz-1.7B-Base).
+    Set TTS_MODEL_NAME=Qwen/Qwen3-TTS-12Hz-1.7B-Base environment variable when starting the server.
+
+    Two modes are available:
+    - ICL mode (x_vector_only_mode=False): Requires ref_text transcript for best quality
+    - X-Vector mode (x_vector_only_mode=True): No transcript needed, good quality
+    """
+    try:
+        backend = await get_tts_backend()
+
+        # Check if voice cloning is supported
+        if not backend.supports_voice_cloning():
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "voice_cloning_not_supported",
+                    "message": "Voice cloning requires the Base model (Qwen3-TTS-12Hz-1.7B-Base). "
+                               "Set TTS_MODEL_NAME=Qwen/Qwen3-TTS-12Hz-1.7B-Base environment variable and restart the server.",
+                    "type": "invalid_request_error",
+                },
+            )
+
+        # Validate ICL mode requires ref_text
+        if not request.x_vector_only_mode and not request.ref_text:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "missing_ref_text",
+                    "message": "ICL mode requires ref_text (transcript of reference audio). "
+                               "Either provide ref_text or set x_vector_only_mode=True.",
+                    "type": "invalid_request_error",
+                },
+            )
+
+        # Decode base64 audio
+        try:
+            audio_bytes = base64.b64decode(request.ref_audio)
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_audio",
+                    "message": f"Failed to decode base64 audio: {e}",
+                    "type": "invalid_request_error",
+                },
+            )
+
+        # Load audio using soundfile
+        try:
+            audio_buffer = io.BytesIO(audio_bytes)
+            ref_audio, ref_sr = sf.read(audio_buffer)
+
+            # Convert to mono if stereo
+            if len(ref_audio.shape) > 1:
+                ref_audio = ref_audio.mean(axis=1)
+
+            ref_audio = ref_audio.astype(np.float32)
+
+        except Exception as e:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "audio_processing_error",
+                    "message": f"Failed to process reference audio: {e}. "
+                               "Ensure the audio is a valid WAV, MP3, or other supported format.",
+                    "type": "invalid_request_error",
+                },
+            )
+
+        # Normalize input text
+        from ..services.text_processing import normalize_text
+        normalized_text = normalize_text(request.input, request.normalization_options)
+
+        if not normalized_text.strip():
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": "invalid_input",
+                    "message": "Input text is empty after normalization",
+                    "type": "invalid_request_error",
+                },
+            )
+
+        # Generate voice clone
+        audio, sample_rate = await backend.generate_voice_clone(
+            text=normalized_text,
+            ref_audio=ref_audio,
+            ref_audio_sr=ref_sr,
+            ref_text=request.ref_text,
+            language=request.language or "Auto",
+            x_vector_only_mode=request.x_vector_only_mode,
+            speed=request.speed,
+        )
+
+        # Encode audio to requested format
+        audio_bytes = encode_audio(audio, request.response_format, sample_rate)
+
+        # Get content type
+        content_type = get_content_type(request.response_format)
+
+        # Return audio response
+        return Response(
+            content=audio_bytes,
+            media_type=content_type,
+            headers={
+                "Content-Disposition": f"attachment; filename=voice_clone.{request.response_format}",
+                "Cache-Control": "no-cache",
+            },
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Voice cloning failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "processing_error",
+                "message": str(e),
+                "type": "server_error",
+            },
+        )

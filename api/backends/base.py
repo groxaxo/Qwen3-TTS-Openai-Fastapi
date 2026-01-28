@@ -83,8 +83,50 @@ class TTSBackend(ABC):
     def get_device_info(self) -> Dict[str, Any]:
         """
         Return device information.
-        
+
         Returns:
             Dict with keys: device, gpu_available, gpu_name, vram_total, vram_used
         """
         pass
+
+    def supports_voice_cloning(self) -> bool:
+        """
+        Return whether the backend supports voice cloning.
+
+        Voice cloning requires the Base model (Qwen3-TTS-12Hz-1.7B-Base).
+        The CustomVoice model does not support voice cloning.
+
+        Returns:
+            True if voice cloning is supported, False otherwise
+        """
+        return False
+
+    async def generate_voice_clone(
+        self,
+        text: str,
+        ref_audio: np.ndarray,
+        ref_audio_sr: int,
+        ref_text: Optional[str] = None,
+        language: str = "Auto",
+        x_vector_only_mode: bool = False,
+        speed: float = 1.0,
+    ) -> Tuple[np.ndarray, int]:
+        """
+        Generate speech by cloning a voice from reference audio.
+
+        Args:
+            text: The text to synthesize
+            ref_audio: Reference audio as numpy array
+            ref_audio_sr: Sample rate of reference audio
+            ref_text: Transcript of reference audio (required for ICL mode)
+            language: Language code (e.g., "English", "Chinese", "Auto")
+            x_vector_only_mode: If True, use x-vector only (no ref_text needed)
+            speed: Speech speed multiplier (0.25 to 4.0)
+
+        Returns:
+            Tuple of (audio_array, sample_rate)
+
+        Raises:
+            NotImplementedError: If voice cloning is not supported by this backend
+        """
+        raise NotImplementedError("Voice cloning is not supported by this backend")

@@ -483,6 +483,101 @@
                 </form>
             </section>
 
+            <!-- Voice Cloning Card -->
+            <section class="card" id="voiceCloneCard" style="display: none;">
+                <h2>Voice Cloning</h2>
+                <p style="color: #888; margin-bottom: 20px; font-size: 13px;">
+                    Clone a voice from reference audio. Upload a 5-10 second audio sample and generate speech in that voice.
+                </p>
+                <form class="tts-form" id="voiceCloneForm">
+                    <div class="form-group">
+                        <label for="cloneMode">Clone Mode</label>
+                        <select id="cloneMode">
+                            <option value="icl">ICL Mode (Best quality - requires transcript)</option>
+                            <option value="xvector">X-Vector Mode (No transcript needed)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="refAudio">Reference Audio</label>
+                        <input type="file" id="refAudio" accept="audio/*" style="
+                            background: rgba(10, 10, 15, 0.8);
+                            border: 1px solid rgba(255, 255, 255, 0.1);
+                            border-radius: 8px;
+                            padding: 15px;
+                            color: #fff;
+                            width: 100%;
+                        ">
+                        <small style="color: #666; font-size: 11px;">Upload a 5-10 second audio file (WAV, MP3, etc.)</small>
+                    </div>
+
+                    <div class="audio-container" id="refAudioPreview" style="margin-top: 0;">
+                        <label style="margin-bottom: 10px; display: block;">Reference Audio Preview</label>
+                        <audio id="refAudioPlayer" controls style="width: 100%;"></audio>
+                    </div>
+
+                    <div class="form-group" id="refTextGroup">
+                        <label for="refText">Reference Text (Transcript)</label>
+                        <textarea id="refText" placeholder="Enter the exact transcript of the reference audio..."></textarea>
+                        <small style="color: #666; font-size: 11px;">Required for ICL mode. Type exactly what is said in the reference audio.</small>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="cloneText">Text to Synthesize</label>
+                        <textarea id="cloneText" placeholder="Enter the text you want to generate with the cloned voice...">Hello! This is a test of the voice cloning feature.</textarea>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="cloneLanguage">Language</label>
+                            <select id="cloneLanguage">
+                                <option value="Auto">Auto-detect</option>
+                                <option value="English">English</option>
+                                <option value="Chinese">Chinese</option>
+                                <option value="Japanese">Japanese</option>
+                                <option value="Korean">Korean</option>
+                                <option value="German">German</option>
+                                <option value="French">French</option>
+                                <option value="Spanish">Spanish</option>
+                                <option value="Russian">Russian</option>
+                                <option value="Portuguese">Portuguese</option>
+                                <option value="Italian">Italian</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="cloneFormat">Audio Format</label>
+                            <select id="cloneFormat">
+                                <option value="mp3">MP3</option>
+                                <option value="opus">Opus</option>
+                                <option value="wav">WAV</option>
+                                <option value="flac">FLAC</option>
+                                <option value="aac">AAC</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="cloneSpeed">Speed: <span id="cloneSpeedValue">1.0x</span></label>
+                        <div class="range-container">
+                            <input type="range" id="cloneSpeed" min="0.25" max="4.0" step="0.05" value="1.0">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="btn" id="cloneBtn">
+                        <span class="btn-text">Clone Voice</span>
+                        <span class="spinner"></span>
+                    </button>
+
+                    <div class="status" id="cloneStatus"></div>
+
+                    <div class="audio-container" id="cloneAudioContainer">
+                        <label style="margin-bottom: 10px; display: block;">Generated Audio</label>
+                        <audio id="cloneAudioPlayer" controls></audio>
+                    </div>
+                </form>
+            </section>
+
             <!-- Backend Status Card -->
             <section class="card">
                 <h2>Backend Status</h2>
@@ -707,6 +802,156 @@ response.<span class="function">stream_to_file</span>(<span class="string">"outp
         // Load voices and backend status on page load
         loadVoices();
         loadBackendStatus();
+
+        // Voice Cloning functionality
+        const voiceCloneCard = document.getElementById('voiceCloneCard');
+        const cloneModeSelect = document.getElementById('cloneMode');
+        const refTextGroup = document.getElementById('refTextGroup');
+        const refAudioInput = document.getElementById('refAudio');
+        const refAudioPreview = document.getElementById('refAudioPreview');
+        const refAudioPlayer = document.getElementById('refAudioPlayer');
+        const cloneSpeedSlider = document.getElementById('cloneSpeed');
+        const cloneSpeedValue = document.getElementById('cloneSpeedValue');
+        const voiceCloneForm = document.getElementById('voiceCloneForm');
+        const cloneBtn = document.getElementById('cloneBtn');
+        const cloneStatus = document.getElementById('cloneStatus');
+        const cloneAudioContainer = document.getElementById('cloneAudioContainer');
+        const cloneAudioPlayer = document.getElementById('cloneAudioPlayer');
+
+        // Clone speed slider
+        cloneSpeedSlider.addEventListener('input', () => {
+            cloneSpeedValue.textContent = cloneSpeedSlider.value + 'x';
+        });
+
+        // Clone mode toggle - show/hide ref_text field
+        cloneModeSelect.addEventListener('change', () => {
+            if (cloneModeSelect.value === 'xvector') {
+                refTextGroup.style.display = 'none';
+            } else {
+                refTextGroup.style.display = 'grid';
+            }
+        });
+
+        // Reference audio file preview
+        refAudioInput.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                const url = URL.createObjectURL(file);
+                refAudioPlayer.src = url;
+                refAudioPreview.classList.add('visible');
+            } else {
+                refAudioPreview.classList.remove('visible');
+            }
+        });
+
+        // Convert file to base64
+        function fileToBase64(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => {
+                    // Remove data URL prefix (e.g., "data:audio/wav;base64,")
+                    const base64 = reader.result.split(',')[1];
+                    resolve(base64);
+                };
+                reader.onerror = reject;
+                reader.readAsDataURL(file);
+            });
+        }
+
+        // Voice clone form submission
+        voiceCloneForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const refFile = refAudioInput.files[0];
+            if (!refFile) {
+                showCloneStatus('Please select a reference audio file', 'error');
+                return;
+            }
+
+            const cloneText = document.getElementById('cloneText').value.trim();
+            if (!cloneText) {
+                showCloneStatus('Please enter text to synthesize', 'error');
+                return;
+            }
+
+            const isXVectorMode = cloneModeSelect.value === 'xvector';
+            const refText = document.getElementById('refText').value.trim();
+
+            if (!isXVectorMode && !refText) {
+                showCloneStatus('ICL mode requires a transcript of the reference audio', 'error');
+                return;
+            }
+
+            cloneBtn.disabled = true;
+            cloneBtn.classList.add('loading');
+            hideCloneStatus();
+            cloneAudioContainer.classList.remove('visible');
+
+            try {
+                const refAudioBase64 = await fileToBase64(refFile);
+
+                const response = await fetch('/v1/audio/voice-clone', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        input: cloneText,
+                        ref_audio: refAudioBase64,
+                        ref_text: isXVectorMode ? null : refText,
+                        x_vector_only_mode: isXVectorMode,
+                        language: document.getElementById('cloneLanguage').value,
+                        response_format: document.getElementById('cloneFormat').value,
+                        speed: parseFloat(cloneSpeedSlider.value),
+                    }),
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail?.message || 'Voice cloning failed');
+                }
+
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+
+                cloneAudioPlayer.src = url;
+                cloneAudioContainer.classList.add('visible');
+                showCloneStatus('Voice cloned successfully!', 'success');
+
+            } catch (error) {
+                showCloneStatus(error.message, 'error');
+            } finally {
+                cloneBtn.disabled = false;
+                cloneBtn.classList.remove('loading');
+            }
+        });
+
+        function showCloneStatus(message, type) {
+            cloneStatus.textContent = message;
+            cloneStatus.className = 'status visible ' + type;
+        }
+
+        function hideCloneStatus() {
+            cloneStatus.classList.remove('visible');
+        }
+
+        // Check voice clone capabilities and show/hide the card
+        async function checkVoiceCloneCapabilities() {
+            try {
+                const response = await fetch('/v1/audio/voice-clone/capabilities');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.supported) {
+                        voiceCloneCard.style.display = 'block';
+                    }
+                }
+            } catch (error) {
+                console.log('Voice cloning not available:', error);
+            }
+        }
+
+        // Check voice clone capabilities on page load
+        checkVoiceCloneCapabilities();
     </script>
 </body>
 </html>

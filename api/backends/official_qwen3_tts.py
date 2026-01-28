@@ -237,24 +237,101 @@ class OfficialQwen3TTSBackend(TTSBackend):
             "vram_total": None,
             "vram_used": None,
         }
-        
+
         try:
             import torch
-            
+
             if torch.cuda.is_available():
                 info["gpu_available"] = True
                 if torch.cuda.current_device() >= 0:
                     device_idx = torch.cuda.current_device()
                     info["gpu_name"] = torch.cuda.get_device_name(device_idx)
-                    
+
                     # Get VRAM info
                     props = torch.cuda.get_device_properties(device_idx)
                     info["vram_total"] = f"{props.total_memory / 1024**3:.2f} GB"
-                    
+
                     if self._ready:
                         allocated = torch.cuda.memory_allocated(device_idx)
                         info["vram_used"] = f"{allocated / 1024**3:.2f} GB"
         except Exception as e:
             logger.warning(f"Could not get device info: {e}")
-        
+
         return info
+
+    def supports_voice_cloning(self) -> bool:
+        """
+        Check if this backend supports voice cloning.
+
+        Voice cloning requires the Base model (Qwen3-TTS-12Hz-1.7B-Base).
+        The CustomVoice model does not support voice cloning.
+        """
+        # Check if we're using the Base model (not CustomVoice)
+        return "Base" in self.model_name and "CustomVoice" not in self.model_name
+
+    def get_model_type(self) -> str:
+        """Return the model type (base or customvoice)."""
+        if "Base" in self.model_name:
+            return "base"
+        elif "CustomVoice" in self.model_name:
+            return "customvoice"
+        return "unknown"
+
+    async def generate_voice_clone(
+        self,
+        text: str,
+        ref_audio: np.ndarray,
+        ref_audio_sr: int,
+        ref_text: Optional[str] = None,
+        language: str = "Auto",
+        x_vector_only_mode: bool = False,
+        speed: float = 1.0,
+    ) -> Tuple[np.ndarray, int]:
+        """
+        Generate speech by cloning a voice from reference audio.
+
+        Args:
+            text: The text to synthesize
+            ref_audio: Reference audio as numpy array
+            ref_audio_sr: Sample rate of reference audio
+            ref_text: Transcript of reference audio (required for ICL mode)
+            language: Language code (e.g., "English", "Chinese", "Auto")
+            x_vector_only_mode: If True, use x-vector only (no ref_text needed)
+            speed: Speech speed multiplier (0.25 to 4.0)
+
+        Returns:
+            Tuple of (audio_array, sample_rate)
+        """
+        if not self._ready:
+            await self.initialize()
+
+        if not self.supports_voice_cloning():
+            raise RuntimeError(
+                "Voice cloning requires the Base model (Qwen3-TTS-12Hz-1.7B-Base). "
+                "The current model does not support voice cloning."
+            )
+
+        try:
+            # Call the model's voice cloning method
+            # ref_audio expects a tuple of (waveform, sample_rate)
+            wavs, sr = self.model.generate_voice_clone(
+                text=text,
+                ref_audio=(ref_audio, ref_audio_sr),
+                ref_text=ref_text,
+                language=language,
+                x_vector_only_mode=x_vector_only_mode,
+            )
+
+            audio = wavs[0]
+
+            # Apply speed adjustment if needed
+            if speed != 1.0 and LIBROSA_AVAILABLE:
+                audio = librosa.effects.time_stretch(audio.astype(np.float32), rate=speed)
+            elif speed != 1.0:
+                logger.warning("Speed adjustment requested but librosa not available")
+
+            return audio, sr
+
+        except Exception as e:
+            logger.error(f"Voice cloning failed: {e}")
+            raise RuntimeError(f"Voice cloning failed: {e}")
