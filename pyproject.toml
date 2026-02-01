@@ -40,6 +40,7 @@ api = [
   "inflect",
   "aiofiles",
   "pydub",
+  "httpx>=0.24.0",
 ]
 vllm = [
   "vllm>=0.4.0",
@@ -57,6 +58,7 @@ Repository = "https://github.com/Qwen/Qwen3-TTS"
 [project.scripts]
 qwen-tts-demo = "qwen_tts.cli.demo:main"
 qwen-tts-api = "api.main:main"
+qwen-tts-voice-studio = "gradio_voice_studio:main"
 
 [tool.setuptools]
 packages = { find = { where = ["."] , include = ["qwen_tts*", "api*"] } }

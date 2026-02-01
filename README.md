@@ -29,6 +29,7 @@ This repository provides an **OpenAI-compatible FastAPI server** for **Qwen3-TTS
 - 🔧 **Text Sanitization** - Advanced text preprocessing for URLs, emails, special characters
 - 🐳 **Docker Ready** - Multi-stage Dockerfile with GPU and CPU variants
 - 🖥️ **Web Interface** - Dark-themed interactive demo UI
+- 🎙️ **Voice Studio** - Comprehensive UI for creating, managing, and exporting voice profiles
 
 ### Backend Options
 
@@ -160,6 +161,36 @@ When using these language-specific models, any `language` parameter in the reque
 After starting the server, visit `http://localhost:8880` for an interactive web demo:
 
 ![Qwen3-TTS Web Interface](https://github.com/user-attachments/assets/cc270f90-2182-44b6-82d5-30aac17360cb)
+
+### Voice Studio
+
+The **Voice Studio** is a comprehensive Gradio-based UI that allows you to create, manage, and export reusable voice profiles. It supports three primary workflows:
+
+- **CustomVoice** - Use preset voices with style instructions
+- **VoiceDesign** - Create custom voices using natural language descriptions
+- **Base** - Clone voices from audio samples (with or without transcripts)
+
+**Features:**
+- 🎙️ Create and save voice profiles locally
+- 🎨 Preview generated audio before saving
+- 📦 Export profiles as ZIP archives
+- 🎮 Interactive playground for testing saved profiles
+- 🔄 Manage your voice library (view, load, delete profiles)
+
+**Launch the Voice Studio:**
+
+```bash
+# Standalone mode (runs on port 7860)
+qwen-tts-voice-studio
+
+# With custom settings
+qwen-tts-voice-studio --base-url http://localhost:8880 --library-dir ./my_voices --port 7860
+
+# Or run directly
+python gradio_voice_studio.py
+```
+
+The Voice Studio will automatically connect to your running Qwen3-TTS API server to generate audio. Make sure the API server is running before using the Voice Studio.
 
 ## 📦 Deployment
 
@@ -309,6 +340,7 @@ For more details about the underlying Qwen3-TTS models, please refer to:
 - [🚀 Quick Start (API Server)](#-quick-start-api-server)
   - [Using OpenAI Python Client](#using-openai-python-client)
   - [Web Interface](#web-interface)
+  - [Voice Studio](#voice-studio)
 - [📦 Deployment](#-deployment)
   - [Option 1: Using Conda (Recommended for Development)](#option-1-using-conda-recommended-for-development)
   - [Option 2: Using Docker (GPU-Enabled)](#option-2-using-docker-gpu-enabled)
