@@ -33,15 +33,21 @@ This repository provides an **OpenAI-compatible FastAPI server** for **Qwen3-TTS
 
 ### Backend Options
 
-This implementation supports two backend engines:
+This implementation supports multiple backend engines:
 
 | Backend | Speed | Setup | Best For | Status |
 |---------|-------|-------|----------|--------|
 | **Official** (default) | ⚡⚡ Excellent | ✅ Simple | All use cases, production-ready | ✅ Stable |
 | **vLLM-Omni** | ⚡⚡⚡ Fast | ⚠️ Python 3.12 + CUDA | High-throughput, low-latency | ✅ Available |
+| **PyTorch CPU** | ⚡ Good | ✅ Simple | CPU-only systems (i5-1240P, etc.) | ✅ Stable |
+| **OpenVINO** | ⚡⚡ Better* | ⚠️ Complex | Intel CPU/NPU (experimental) | ⚠️ Experimental |
 
-- **Official Backend**: Uses the official Qwen3-TTS Python implementation. **Recommended for most users.**
+- **Official Backend**: Uses the official Qwen3-TTS Python implementation with GPU/CPU auto-detect. **Recommended for most users.**
 - **vLLM-Omni Backend**: Uses [vLLM-Omni](https://docs.vllm.ai/projects/vllm-omni/) for optimized inference. Requires Python 3.12 and a dedicated Docker image. See [VLLM_BACKEND_STATUS.md](VLLM_BACKEND_STATUS.md) for details.
+- **PyTorch CPU Backend**: CPU-optimized PyTorch with threading tuning and optional IPEX support. **Recommended for CPU-only systems.** See [CPU_BACKEND_GUIDE.md](CPU_BACKEND_GUIDE.md) for details.
+- **OpenVINO Backend**: Experimental Intel CPU/NPU acceleration. Requires manual model export. **Use PyTorch CPU backend for reliable CPU inference.**
+
+*OpenVINO may only accelerate parts of the pipeline
 
 ## 🚀 Performance Benchmarks
 
@@ -320,6 +326,50 @@ docker-compose down
 ```
 
 **Model Cache:** Models are cached in `~/.cache/huggingface` and automatically mounted as a volume for persistence.
+
+## 💻 CPU-Only Deployment
+
+For systems without a GPU (e.g., Intel i5-1240P), use the optimized CPU backend:
+
+### Using PyTorch CPU Backend (Recommended)
+
+```bash
+# Set environment variables
+export TTS_BACKEND=pytorch
+export TTS_MODEL_ID=Qwen/Qwen3-TTS-12Hz-0.6B-Base  # Smaller model for CPU
+export TTS_DEVICE=cpu
+export TTS_DTYPE=float32
+export TTS_ATTN=sdpa
+export CPU_THREADS=12          # Adjust for your CPU cores
+export CPU_INTEROP=2
+
+# Optional: Enable Intel Extension for PyTorch (Intel CPUs only)
+export USE_IPEX=true
+
+# Start the server
+python -m api.main
+```
+
+### Using Docker (CPU-Optimized)
+
+```bash
+# Build and run CPU-optimized container
+docker build -t qwen3-tts-api-cpu --target cpu-base .
+docker run -p 8880:8880 \
+  -e TTS_BACKEND=pytorch \
+  -e TTS_MODEL_ID=Qwen/Qwen3-TTS-12Hz-0.6B-Base \
+  -e CPU_THREADS=12 \
+  qwen3-tts-api-cpu
+```
+
+### Performance Expectations (i5-1240P)
+
+- **Model**: Qwen3-TTS-12Hz-0.6B-Base
+- **RTF**: ~2.5-3.0 (PyTorch CPU) or ~2.0-2.5 (with IPEX)
+- **First request**: ~30-45s (model loading)
+- **Subsequent requests**: ~2-3s per request
+
+📖 **See [CPU_BACKEND_GUIDE.md](CPU_BACKEND_GUIDE.md)** for complete CPU deployment guide, performance tuning, and troubleshooting.
 
 ## 🎯 API Endpoints
 
