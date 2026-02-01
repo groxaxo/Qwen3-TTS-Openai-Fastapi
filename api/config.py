@@ -69,10 +69,11 @@ Options: 'auto', 'flash_attention_2', 'sdpa', 'eager'
 # CPU Performance Tuning
 # ============================================================================
 
-CPU_THREADS = int(os.getenv("CPU_THREADS", "12"))
+CPU_THREADS = int(os.getenv("CPU_THREADS", str(os.cpu_count() or 4)))
 """
 Number of threads for PyTorch CPU operations.
 Recommended: Set to number of physical cores (not logical cores).
+Default: Auto-detect available cores, fallback to 4.
 For i5-1240P: 12 threads (4 P-cores + 8 E-cores)
 """
 

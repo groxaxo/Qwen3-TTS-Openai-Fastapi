@@ -199,7 +199,8 @@ class OpenVINOBackend(TTSBackend):
                     try:
                         gpu_name = self.core.get_property("GPU", "FULL_DEVICE_NAME")
                         info["gpu_name"] = gpu_name
-                    except:
+                    except Exception:
+                        # GPU property retrieval failed, not critical
                         pass
             except Exception as e:
                 logger.warning(f"Could not get OpenVINO device info: {e}")

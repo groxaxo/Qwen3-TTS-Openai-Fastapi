@@ -30,7 +30,7 @@ async def test_cpu_backend():
     os.environ["TTS_DEVICE"] = "cpu"
     os.environ["TTS_DTYPE"] = "float32"
     os.environ["TTS_ATTN"] = "sdpa"
-    os.environ["CPU_THREADS"] = "4"  # Adjust for your CPU
+    os.environ["CPU_THREADS"] = str(os.cpu_count() or 4)  # Auto-detect CPU cores
     os.environ["CPU_INTEROP"] = "1"
     
     logger.info("=" * 60)
