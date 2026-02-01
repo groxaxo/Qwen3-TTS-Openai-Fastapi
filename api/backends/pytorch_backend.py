@@ -76,9 +76,14 @@ class PyTorchCPUBackend(TTSBackend):
         
         # Configure CPU threading
         if device == "cpu":
-            torch.set_num_threads(cpu_threads)
-            torch.set_num_interop_threads(cpu_interop_threads)
-            logger.info(f"Set PyTorch CPU threads: {cpu_threads}, interop: {cpu_interop_threads}")
+            try:
+                torch.set_num_threads(cpu_threads)
+                torch.set_num_interop_threads(cpu_interop_threads)
+                logger.info(f"Set PyTorch CPU threads: {cpu_threads}, interop: {cpu_interop_threads}")
+            except RuntimeError as e:
+                # Thread settings may fail if already set, this is non-critical
+                logger.warning(f"Could not set thread counts (already set): {e}")
+                logger.info(f"Using existing PyTorch thread settings")
     
     async def initialize(self) -> None:
         """Initialize the backend and load the model."""

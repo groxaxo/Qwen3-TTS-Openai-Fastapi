@@ -38,18 +38,24 @@ def get_backend() -> TTSBackend:
     if _backend_instance is not None:
         return _backend_instance
     
-    # Import config after module is loaded to allow environment variable setup
-    from ..config import (
-        TTS_BACKEND, TTS_MODEL_ID, TTS_DEVICE, TTS_DTYPE, TTS_ATTN,
-        CPU_THREADS, CPU_INTEROP, USE_IPEX,
-        OV_DEVICE, OV_CACHE_DIR, OV_MODEL_DIR
-    )
+    # Read configuration from environment variables directly to support testing
+    backend_type = os.getenv("TTS_BACKEND", "official").lower()
+    model_name = os.getenv("TTS_MODEL_NAME", os.getenv("TTS_MODEL_ID", "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"))
     
-    # Get backend type from environment
-    backend_type = TTS_BACKEND.lower()
+    # Device and dtype settings
+    device = os.getenv("TTS_DEVICE", "auto")
+    dtype = os.getenv("TTS_DTYPE", "auto")
+    attn = os.getenv("TTS_ATTN", "auto")
     
-    # Get model name from environment (optional override)
-    model_name = os.getenv("TTS_MODEL_NAME", TTS_MODEL_ID)
+    # CPU settings
+    cpu_threads = int(os.getenv("CPU_THREADS", "12"))
+    cpu_interop = int(os.getenv("CPU_INTEROP", "2"))
+    use_ipex = os.getenv("USE_IPEX", "false").lower() == "true"
+    
+    # OpenVINO settings
+    ov_device = os.getenv("OV_DEVICE", "CPU")
+    ov_cache_dir = os.getenv("OV_CACHE_DIR", "./.ov_cache")
+    ov_model_dir = os.getenv("OV_MODEL_DIR", "./.ov_models")
     
     logger.info(f"Initializing TTS backend: {backend_type}")
     
@@ -77,34 +83,34 @@ def get_backend() -> TTSBackend:
     
     elif backend_type == "pytorch":
         # CPU-optimized PyTorch backend
-        device = TTS_DEVICE if TTS_DEVICE != "auto" else "cpu"
-        dtype = TTS_DTYPE if TTS_DTYPE != "auto" else "float32"
-        attn = TTS_ATTN if TTS_ATTN != "auto" else "sdpa"
+        device_val = device if device != "auto" else "cpu"
+        dtype_val = dtype if dtype != "auto" else "float32"
+        attn_val = attn if attn != "auto" else "sdpa"
         
         _backend_instance = PyTorchCPUBackend(
             model_id=model_name,
-            device=device,
-            dtype=dtype,
-            attn_implementation=attn,
-            cpu_threads=CPU_THREADS,
-            cpu_interop_threads=CPU_INTEROP,
-            use_ipex=USE_IPEX,
+            device=device_val,
+            dtype=dtype_val,
+            attn_implementation=attn_val,
+            cpu_threads=cpu_threads,
+            cpu_interop_threads=cpu_interop,
+            use_ipex=use_ipex,
         )
         
         logger.info(f"Using CPU-optimized PyTorch backend with model: {_backend_instance.get_model_id()}")
-        logger.info(f"Device: {device}, Dtype: {dtype}, Attention: {attn}")
-        logger.info(f"CPU Threads: {CPU_THREADS}, Interop: {CPU_INTEROP}, IPEX: {USE_IPEX}")
+        logger.info(f"Device: {device_val}, Dtype: {dtype_val}, Attention: {attn_val}")
+        logger.info(f"CPU Threads: {cpu_threads}, Interop: {cpu_interop}, IPEX: {use_ipex}")
     
     elif backend_type == "openvino":
         # Experimental OpenVINO backend
         _backend_instance = OpenVINOBackend(
-            ov_model_dir=OV_MODEL_DIR,
-            ov_device=OV_DEVICE,
-            ov_cache_dir=OV_CACHE_DIR,
+            ov_model_dir=ov_model_dir,
+            ov_device=ov_device,
+            ov_cache_dir=ov_cache_dir,
         )
         
         logger.info(f"Using experimental OpenVINO backend")
-        logger.info(f"Model dir: {OV_MODEL_DIR}, Device: {OV_DEVICE}")
+        logger.info(f"Model dir: {ov_model_dir}, Device: {ov_device}")
         logger.warning(
             "OpenVINO backend is experimental and requires manual model export. "
             "For reliable CPU inference, use TTS_BACKEND=pytorch instead."
