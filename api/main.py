@@ -169,7 +169,9 @@ if ENABLE_VOICE_STUDIO:
             from gradio_voice_studio import build_app
             
             # Build the Voice Studio app with the current server URL
-            base_url = f"http://localhost:{PORT}"
+            # Use localhost when server is bound to 0.0.0.0, otherwise use the actual host
+            voice_studio_host = "localhost" if HOST == "0.0.0.0" else HOST
+            base_url = f"http://{voice_studio_host}:{PORT}"
             voice_studio_app = build_app(base_url, VOICE_LIBRARY_DIR)
             
             # Mount the Gradio app
