@@ -6,6 +6,7 @@ Factory for creating TTS backend instances.
 
 import os
 import logging
+from pathlib import Path
 from typing import Optional
 
 from .base import TTSBackend
@@ -137,10 +138,20 @@ async def initialize_backend(warmup: bool = False) -> TTSBackend:
         Initialized TTSBackend instance
     """
     backend = get_backend()
-    
+
     # Initialize the backend
     await backend.initialize()
-    
+
+    # Load custom voices
+    custom_voices_dir = os.getenv(
+        "TTS_CUSTOM_VOICES",
+        str(Path(__file__).resolve().parent.parent.parent / "custom_voices"),
+    )
+    try:
+        await backend.load_custom_voices(custom_voices_dir)
+    except Exception as e:
+        logger.warning(f"Custom voice loading failed (non-critical): {e}")
+
     # Perform warmup if requested
     if warmup:
         warmup_enabled = os.getenv("TTS_WARMUP_ON_START", "false").lower() == "true"

@@ -174,10 +174,23 @@ async def generate_speech(
         Tuple of (audio_array, sample_rate)
     """
     backend = await get_tts_backend()
-    
+
     # Map voice name
     voice_name = get_voice_name(voice)
-    
+
+    # Route to custom voice generation if applicable
+    if backend.is_custom_voice(voice_name):
+        try:
+            audio, sr = await backend.generate_speech_with_custom_voice(
+                text=text,
+                voice=voice_name,
+                language=language,
+                speed=speed,
+            )
+            return audio, sr
+        except Exception as e:
+            raise RuntimeError(f"Speech generation failed: {e}")
+
     # Generate speech using the backend
     try:
         audio, sr = await backend.generate_speech(
@@ -187,9 +200,9 @@ async def generate_speech(
             instruct=instruct,
             speed=speed,
         )
-        
+
         return audio, sr
-        
+
     except Exception as e:
         raise RuntimeError(f"Speech generation failed: {e}")
 
@@ -336,11 +349,15 @@ async def list_voices():
         if speakers:
             voices = []
             for speaker in speakers:
+                if backend.is_custom_voice(speaker):
+                    description = f"Custom cloned voice: {speaker}"
+                else:
+                    description = f"Qwen3-TTS voice: {speaker}"
                 voice_info = VoiceInfo(
                     id=speaker,
                     name=speaker,
                     language=languages[0] if languages else "Auto",
-                    description=f"Qwen3-TTS voice: {speaker}",
+                    description=description,
                 )
                 voices.append(voice_info.model_dump())
         else:
