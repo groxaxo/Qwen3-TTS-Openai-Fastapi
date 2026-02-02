@@ -158,7 +158,7 @@ class OfficialQwen3TTSBackend(TTSBackend):
         """
         if not self._ready:
             await self.initialize()
-        
+
         try:
             # Generate speech
             wavs, sr = self.model.generate_custom_voice(
@@ -192,8 +192,11 @@ class OfficialQwen3TTSBackend(TTSBackend):
     
     def get_supported_voices(self) -> List[str]:
         """Return list of supported voice names, including custom voices."""
+        # Base models only support custom (cloned) voices
+        if self.get_model_type() == "base":
+            return list(self._custom_voices.keys())
+
         if not self._ready or not self.model:
-            # Return default voices when model is not loaded
             voices = ["Vivian", "Ryan", "Sophia", "Isabella", "Evan", "Lily"]
         else:
             try:
@@ -209,7 +212,6 @@ class OfficialQwen3TTSBackend(TTSBackend):
                 logger.warning(f"Could not get speakers from model: {e}")
                 voices = ["Vivian", "Ryan", "Sophia", "Isabella", "Evan", "Lily"]
 
-        # Append custom voice names
         voices.extend(self._custom_voices.keys())
         return voices
     

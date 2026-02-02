@@ -7,7 +7,7 @@ Load your own cloned voices at server startup. Each voice is a folder inside `cu
 ## Requirements
 
 - **Official backend only** (`TTS_BACKEND=official`). vLLM does not support custom voices.
-- **Base model** (`Qwen/Qwen3-TTS-12Hz-1.7B-Base`). The default CustomVoice model will skip loading.
+- **Base model** (`Qwen/Qwen3-TTS-12Hz-1.7B-Base` or the 0.6B equivalent). The default CustomVoice model will skip loading.
 
 ## Directory layout
 
@@ -57,7 +57,6 @@ qwen3-tts-gpu:
   environment:
     - TTS_MODEL_NAME=Qwen/Qwen3-TTS-12Hz-1.7B-Base
   volumes:
-    - ~/.cache/huggingface:/home/appuser/.cache/huggingface
     - ./custom_voices:/app/custom_voices          # <-- add this
 ```
 

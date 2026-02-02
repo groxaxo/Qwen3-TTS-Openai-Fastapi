@@ -363,8 +363,12 @@ async def list_voices():
         else:
             voices = [v.model_dump() for v in default_voices]
         
+        # OpenAI aliases map to built-in speakers; skip them on Base models
+        if backend.get_model_type() != "base":
+            voices += [v.model_dump() for v in openai_voices]
+
         return {
-            "voices": voices + [v.model_dump() for v in openai_voices],
+            "voices": voices,
             "languages": languages if languages else default_languages,
         }
         
