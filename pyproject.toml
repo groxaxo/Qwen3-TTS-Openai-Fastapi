@@ -31,40 +31,16 @@ dependencies = [
   "einops",
 ]
 
-[project.optional-dependencies]
-api = [
-  "fastapi>=0.109.0",
-  "uvicorn[standard]>=0.27.0",
-  "python-multipart",
-  "pydantic>=2.0.0",
-  "inflect",
-  "aiofiles",
-  "pydub",
-  "httpx>=0.24.0",
-]
-vllm = [
-  "vllm>=0.4.0",
-]
-dev = [
-  "pytest>=7.0.0",
-  "pytest-asyncio>=0.21.0",
-  "httpx>=0.24.0",
-]
-
 [project.urls]
 Homepage = "https://github.com/Qwen/Qwen3-TTS"
 Repository = "https://github.com/Qwen/Qwen3-TTS"
 
 [project.scripts]
 qwen-tts-demo = "qwen_tts.cli.demo:main"
-qwen-tts-api = "api.main:main"
-qwen-tts-voice-studio = "gradio_voice_studio:main"
 
 [tool.setuptools]
-packages = { find = { where = ["."] , include = ["qwen_tts*", "api*"] } }
-py-modules = ["gradio_voice_studio"]
+packages = { find = { where = ["."] , include = ["qwen_tts*"] } }
 include-package-data = true
 
 [tool.setuptools.package-data]
 qwen_tts = ["py.typed", "**/*.npz"]
-api = ["static/*", "static/**/*"]
