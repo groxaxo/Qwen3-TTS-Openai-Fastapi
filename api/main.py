@@ -92,6 +92,10 @@ async def lifespan(app: FastAPI):
         if device_info.get("gpu_available"):
             logger.info(f"GPU: {device_info.get('gpu_name')}")
             logger.info(f"VRAM: {device_info.get('vram_total')}")
+
+        custom_voice_names = backend.get_custom_voice_names()
+        if custom_voice_names:
+            logger.info(f"Custom voices ({len(custom_voice_names)}): {custom_voice_names}")
     except Exception as e:
         logger.warning(f"Backend initialization delayed: {e}")
         logger.info("Backend will be loaded on first request.")

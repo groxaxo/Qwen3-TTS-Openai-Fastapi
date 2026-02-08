@@ -22,3 +22,20 @@ wheels/
 .vscode/
 venv/
 env/
+.venv/
+.python-version
+uv.lock
+
+# Audio output files
+output/
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.aac
+*.opus
+
+
+# LLM infra
+CLAUDE.md

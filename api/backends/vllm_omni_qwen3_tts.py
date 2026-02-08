@@ -333,6 +333,23 @@ class VLLMOmniQwen3TTSBackend(TTSBackend):
         # Check if we're using the Base model (not CustomVoice)
         return "Base" in self.model_name and "CustomVoice" not in self.model_name
 
+    async def load_custom_voices(self, custom_voices_dir: str) -> None:
+        """Log a warning if custom voice directories exist, as vLLM doesn't support them."""
+        from pathlib import Path
+
+        voices_path = Path(custom_voices_dir)
+        if not voices_path.exists():
+            return
+
+        # Check if there are any voice subdirectories
+        voice_dirs = [d for d in voices_path.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        if voice_dirs:
+            logger.warning(
+                f"Found {len(voice_dirs)} custom voice folder(s) in {custom_voices_dir}, "
+                "but the vLLM backend does not support voice cloning. "
+                "Custom voices will be ignored. Use the official backend with the Base model instead."
+            )
+
     def get_model_type(self) -> str:
         """Return the model type (base, customvoice, or voicedesign)."""
         if "Base" in self.model_name:

@@ -2532,12 +2532,22 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             "subtalker_temperature": subtalker_temperature,
             "eos_token_id": eos_token_id
             if eos_token_id is not None
-            else self.config.talker_config.codec_eos_token_id,
+            else [
+                self.config.talker_config.codec_eos_token_id,
+                self.config.talker_config.codec_think_eos_id,
+                self.config.tts_eos_token_id,
+                self.config.tts_pad_token_id,
+                self.config.im_end_token_id,
+                self.config.im_start_token_id,
+            ],
             "repetition_penalty": repetition_penalty,
             "suppress_tokens": [
                 i
                 for i in range(self.config.talker_config.vocab_size - 1024, self.config.talker_config.vocab_size)
-                if i not in (self.config.talker_config.codec_eos_token_id,)
+                if i not in (
+                    self.config.talker_config.codec_eos_token_id,
+                    self.config.talker_config.codec_think_eos_id,
+                )
             ],
             "output_hidden_states": kwargs.get("output_hidden_states", True),
             "return_dict_in_generate": kwargs.get("return_dict_in_generate", True)

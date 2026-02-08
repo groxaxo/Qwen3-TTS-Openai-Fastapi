@@ -8,6 +8,8 @@ from the qwen_tts package.
 """
 
 import logging
+import os
+from pathlib import Path
 from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 
@@ -156,7 +158,7 @@ class OfficialQwen3TTSBackend(TTSBackend):
         """
         if not self._ready:
             await self.initialize()
-        
+
         try:
             # Generate speech
             wavs, sr = self.model.generate_custom_voice(
@@ -189,21 +191,29 @@ class OfficialQwen3TTSBackend(TTSBackend):
         return self.model_name
     
     def get_supported_voices(self) -> List[str]:
-        """Return list of supported voice names."""
+        """Return list of supported voice names, including custom voices."""
+        # Base models only support custom (cloned) voices
+        if self.get_model_type() == "base":
+            return list(self._custom_voices.keys())
+
         if not self._ready or not self.model:
-            # Return default voices when model is not loaded
-            return ["Vivian", "Ryan", "Sophia", "Isabella", "Evan", "Lily"]
-        
-        try:
-            if hasattr(self.model.model, 'get_supported_speakers'):
-                speakers = self.model.model.get_supported_speakers()
-                if speakers:
-                    return list(speakers)
-        except Exception as e:
-            logger.warning(f"Could not get speakers from model: {e}")
-        
-        # Fallback to default voices
-        return ["Vivian", "Ryan", "Sophia", "Isabella", "Evan", "Lily"]
+            voices = ["Vivian", "Ryan", "Sophia", "Isabella", "Evan", "Lily"]
+        else:
+            try:
+                if hasattr(self.model.model, 'get_supported_speakers'):
+                    speakers = self.model.model.get_supported_speakers()
+                    if speakers:
+                        voices = list(speakers)
+                    else:
+                        voices = ["Vivian", "Ryan", "Sophia", "Isabella", "Evan", "Lily"]
+                else:
+                    voices = ["Vivian", "Ryan", "Sophia", "Isabella", "Evan", "Lily"]
+            except Exception as e:
+                logger.warning(f"Could not get speakers from model: {e}")
+                voices = ["Vivian", "Ryan", "Sophia", "Isabella", "Evan", "Lily"]
+
+        voices.extend(self._custom_voices.keys())
+        return voices
     
     def get_supported_languages(self) -> List[str]:
         """Return list of supported language names."""
@@ -335,3 +345,143 @@ class OfficialQwen3TTSBackend(TTSBackend):
         except Exception as e:
             logger.error(f"Voice cloning failed: {e}")
             raise RuntimeError(f"Voice cloning failed: {e}")
+
+    async def load_custom_voices(self, custom_voices_dir: str) -> None:
+        """Load custom voices from a directory, caching prompt artifacts."""
+        voices_path = Path(custom_voices_dir)
+        if not voices_path.exists():
+            logger.info(f"Custom voices directory does not exist: {custom_voices_dir}")
+            return
+
+        if not self.supports_voice_cloning():
+            logger.warning(
+                "Custom voices require the Base model (Qwen3-TTS-12Hz-1.7B-Base). "
+                "Skipping custom voice loading."
+            )
+            return
+
+        import torch
+
+        # Build lowercase set of built-in voices for collision check
+        builtin_voices = {v.lower() for v in self.get_supported_voices()}
+
+        audio_extensions = (".wav", ".mp3", ".m4a", ".flac", ".ogg")
+        loaded = []
+
+        for entry in sorted(voices_path.iterdir()):
+            if not entry.is_dir():
+                continue
+
+            voice_name = entry.name
+
+            # Skip hidden directories
+            if voice_name.startswith("."):
+                continue
+
+            # Collision check (case-insensitive)
+            if voice_name.lower() in builtin_voices:
+                logger.error(
+                    f"Custom voice '{voice_name}' collides with a built-in voice name. Skipping."
+                )
+                continue
+
+            # Find reference audio
+            ref_audio_path = None
+            for ext in audio_extensions:
+                candidate = entry / f"reference{ext}"
+                if candidate.exists():
+                    ref_audio_path = candidate
+                    break
+
+            if ref_audio_path is None:
+                logger.warning(
+                    f"No reference audio found in '{voice_name}/' "
+                    f"(expected reference.{{wav,mp3,m4a,flac,ogg}}). Skipping."
+                )
+                continue
+
+            # Read optional reference text
+            ref_text_path = entry / "reference.txt"
+            ref_text = None
+            if ref_text_path.exists():
+                text_content = ref_text_path.read_text(encoding="utf-8").strip()
+                if text_content:
+                    ref_text = text_content
+
+            x_vector_only_mode = ref_text is None
+
+            # Check for cached prompt
+            cache_path = entry / ".cached_prompt.pt"
+
+            if cache_path.exists():
+                try:
+                    prompt_items = torch.load(
+                        cache_path, map_location=self.device, weights_only=False
+                    )
+                    self._custom_voices[voice_name] = prompt_items
+                    loaded.append(voice_name)
+                    logger.info(f"Loaded cached custom voice '{voice_name}'")
+                    continue
+                except Exception as e:
+                    logger.warning(
+                        f"Failed to load cache for '{voice_name}', re-extracting: {e}"
+                    )
+
+            # Extract voice clone prompt
+            logger.info(f"Extracting custom voice '{voice_name}'...")
+            try:
+                prompt_items = self.model.create_voice_clone_prompt(
+                    ref_audio=str(ref_audio_path),
+                    ref_text=ref_text,
+                    x_vector_only_mode=x_vector_only_mode,
+                )
+
+                # Cache to disk
+                torch.save(prompt_items, cache_path)
+                logger.info(f"Cached custom voice '{voice_name}' to {cache_path}")
+
+                self._custom_voices[voice_name] = prompt_items
+                loaded.append(voice_name)
+            except Exception as e:
+                logger.error(f"Failed to extract custom voice '{voice_name}': {e}")
+
+        if loaded:
+            logger.info(f"Loaded {len(loaded)} custom voice(s): {loaded}")
+        else:
+            logger.info("No custom voices loaded")
+
+    async def generate_speech_with_custom_voice(
+        self,
+        text: str,
+        voice: str,
+        language: str = "Auto",
+        speed: float = 1.0,
+    ) -> Tuple[np.ndarray, int]:
+        """Generate speech using a custom cloned voice."""
+        if not self._ready:
+            await self.initialize()
+
+        prompt_items = self._custom_voices.get(voice)
+        if prompt_items is None:
+            raise RuntimeError(f"Custom voice '{voice}' not found")
+
+        try:
+            wavs, sr = self.model.generate_voice_clone(
+                text=text,
+                language=language,
+                voice_clone_prompt=prompt_items,
+            )
+
+            audio = wavs[0]
+
+            # Apply speed adjustment if needed
+            if speed != 1.0 and LIBROSA_AVAILABLE:
+                audio = librosa.effects.time_stretch(audio.astype(np.float32), rate=speed)
+            elif speed != 1.0:
+                logger.warning("Speed adjustment requested but librosa not available")
+
+            return audio, sr
+
+        except Exception as e:
+            logger.error(f"Custom voice generation failed: {e}")
+            raise RuntimeError(f"Custom voice generation failed: {e}")

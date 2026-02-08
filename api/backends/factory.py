@@ -6,6 +6,7 @@ Factory for creating TTS backend instances.
 
 import os
 import logging
+from pathlib import Path
 from typing import Optional
 
 from .base import TTSBackend
@@ -137,22 +138,42 @@ async def initialize_backend(warmup: bool = False) -> TTSBackend:
         Initialized TTSBackend instance
     """
     backend = get_backend()
-    
+
     # Initialize the backend
     await backend.initialize()
-    
+
+    # Load custom voices
+    custom_voices_dir = os.getenv(
+        "TTS_CUSTOM_VOICES",
+        str(Path(__file__).resolve().parent.parent.parent / "custom_voices"),
+    )
+    try:
+        await backend.load_custom_voices(custom_voices_dir)
+    except Exception as e:
+        logger.warning(f"Custom voice loading failed (non-critical): {e}")
+
     # Perform warmup if requested
     if warmup:
         warmup_enabled = os.getenv("TTS_WARMUP_ON_START", "false").lower() == "true"
         if warmup_enabled:
             logger.info("Performing backend warmup...")
             try:
-                # Run a simple warmup generation
-                await backend.generate_speech(
-                    text="Hello, this is a warmup test.",
-                    voice="Vivian",
-                    language="English",
-                )
+                custom_names = backend.get_custom_voice_names()
+                if backend.get_model_type() == "base" and custom_names:
+                    # Base models only support voice cloning, warm up with a custom voice
+                    await backend.generate_speech_with_custom_voice(
+                        text="Hello, this is a warmup test.",
+                        voice=custom_names[0],
+                        language="English",
+                    )
+                elif backend.get_model_type() == "base":
+                    logger.info("Skipping warmup: Base model has no custom voices to warm up with")
+                else:
+                    await backend.generate_speech(
+                        text="Hello, this is a warmup test.",
+                        voice="Vivian",
+                        language="English",
+                    )
                 logger.info("Backend warmup completed successfully")
             except Exception as e:
                 logger.warning(f"Backend warmup failed (non-critical): {e}")

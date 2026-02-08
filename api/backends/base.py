@@ -4,19 +4,23 @@
 Base class for TTS backends.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple, List, Dict, Any
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 
 class TTSBackend(ABC):
     """Abstract base class for TTS backends."""
-    
+
     def __init__(self):
         """Initialize the backend."""
         self.model = None
         self.device = None
         self.dtype = None
+        self._custom_voices: Dict[str, Any] = {}
     
     @abstractmethod
     async def initialize(self) -> None:
@@ -130,3 +134,47 @@ class TTSBackend(ABC):
             NotImplementedError: If voice cloning is not supported by this backend
         """
         raise NotImplementedError("Voice cloning is not supported by this backend")
+
+    async def load_custom_voices(self, custom_voices_dir: str) -> None:
+        """
+        Load custom voices from a directory.
+
+        Each subdirectory should contain a reference audio file and optional
+        reference.txt for ICL mode. Override in subclasses to implement.
+
+        Args:
+            custom_voices_dir: Path to the custom voices directory
+        """
+        logger.info("Custom voice loading is not supported by this backend")
+
+    def get_custom_voice_names(self) -> List[str]:
+        """Return list of loaded custom voice names."""
+        return list(self._custom_voices.keys())
+
+    def is_custom_voice(self, voice_name: str) -> bool:
+        """Check if a voice name is a custom voice."""
+        return voice_name in self._custom_voices
+
+    async def generate_speech_with_custom_voice(
+        self,
+        text: str,
+        voice: str,
+        language: str = "Auto",
+        speed: float = 1.0,
+    ) -> Tuple[np.ndarray, int]:
+        """
+        Generate speech using a custom cloned voice.
+
+        Args:
+            text: The text to synthesize
+            voice: Custom voice name
+            language: Language code
+            speed: Speech speed multiplier
+
+        Returns:
+            Tuple of (audio_array, sample_rate)
+
+        Raises:
+            NotImplementedError: If not supported by this backend
+        """
+        raise NotImplementedError("Custom voice generation is not supported by this backend")
