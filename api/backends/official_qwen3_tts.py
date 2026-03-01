@@ -310,6 +310,7 @@ class OfficialQwen3TTSBackend(TTSBackend):
         language: str = "Auto",
         x_vector_only_mode: bool = False,
         speed: float = 1.0,
+        **kwargs,
     ) -> Tuple[np.ndarray, int]:
         """
         Generate speech by cloning a voice from reference audio.
