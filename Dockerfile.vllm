@@ -16,10 +16,7 @@ RUN rm -rf /var/lib/apt/lists/* && \
     curl \
  && rm -rf /var/lib/apt/lists/*
 
-# Copy application code
-COPY . /app
-
-# Install API dependencies
+# Install API dependencies (before COPY so these layers are cached)
 RUN pip install --no-cache-dir -U pip && \
     pip install --no-cache-dir \
     fastapi>=0.109.0 \
@@ -34,9 +31,12 @@ RUN pip install --no-cache-dir -U pip && \
     pydub \
     librosa
 
-# Install ninja and flash-attention 2 for optimized inference
+# Install ninja and flash-attention 2 for optimized inference (slow build, cached)
 RUN pip install --no-cache-dir ninja packaging wheel && \
     pip install --no-cache-dir flash-attn --no-build-isolation
+
+# Copy application code (only this layer invalidates on code changes)
+COPY . /app
 
 # Install the package
 RUN pip install --no-cache-dir -e .
