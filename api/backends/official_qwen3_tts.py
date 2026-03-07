@@ -130,11 +130,14 @@ class OfficialQwen3TTSBackend(TTSBackend):
                 except Exception as e:
                     logger.warning(f"Could not apply torch.compile(): {e}")
             
-            # Enable cuDNN benchmarking for optimal convolution algorithms
-            if torch.cuda.is_available():
-                torch.backends.cudnn.benchmark = True
-                logger.info("Enabled cuDNN benchmark mode")
-            
+            is_hip = hasattr(torch.version, 'hip') and torch.version.hip is not None
+            # This is very slow on ROCm
+            if not is_hip:
+                # Enable cuDNN benchmarking for optimal convolution algorithms
+                if torch.cuda.is_available():
+                    torch.backends.cudnn.benchmark = True
+                    logger.info("Enabled cuDNN benchmark mode")
+                
             # Enable TF32 for faster matmul on Ampere+ GPUs (RTX 30xx/40xx)
             if torch.cuda.is_available():
                 torch.backends.cuda.matmul.allow_tf32 = True

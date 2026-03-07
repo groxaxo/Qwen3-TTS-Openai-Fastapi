@@ -1,0 +1,63 @@
+# Qwen3-TTS OpenAI-Compatible API Server
+# ROCm-based Dockerfile for AMD GPU support
+FROM rocm/pytorch:rocm7.1.1_ubuntu24.04_py3.13_pytorch_release_2.10.0
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
+
+# Set environment variables for ROCm optimization
+ENV MIOPEN_FIND_MODE=FAST \
+    MIOPEN_USER_DB_PATH=/app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    sox \
+    libsox-fmt-all \
+    libsndfile1 \
+    ffmpeg \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip setuptools wheel \
+    && pip install --no-cache-dir \
+    "transformers==4.57.3" \
+    "accelerate==1.12.0" \
+    librosa \
+    soundfile \
+    pydub \
+    numpy \
+    scipy \
+    einops \
+    onnxruntime \
+    fastapi>=0.109.0 \
+    uvicorn[standard]>=0.27.0 \
+    python-multipart \
+    pydantic>=2.0.0 \
+    inflect \
+    aiofiles \
+    httpx>=0.24.0 \
+    pyyaml \
+    sox
+
+# Copy application code
+COPY . .
+
+# Environment variables
+ENV HOST=0.0.0.0 \
+    PORT=8880 \
+    WORKERS=1 \
+    PYTHONPATH=/app \
+    TTS_BACKEND=official
+
+EXPOSE 8880
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8880/health || exit 1
+
+# Run as root (required for ROCm GPU access)
+CMD ["python", "-m", "api.main"]

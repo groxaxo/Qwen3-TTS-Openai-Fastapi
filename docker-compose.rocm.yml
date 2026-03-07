@@ -1,0 +1,45 @@
+# Docker Compose for ROCm (AMD GPU) support
+#
+# Usage:
+#   docker compose -f docker-compose.rocm.yml up
+#   # Or with environment variables:
+#   MODEL=customvoice docker compose -f docker-compose.rocm.yml up
+#   TTS_BACKEND=optimized docker compose -f docker-compose.rocm.yml up
+
+services:
+  qwen3-tts-rocm:
+    build:
+      context: .
+      dockerfile: Dockerfile.rocm
+    image: qwen3-tts-api-rocm:latest
+    container_name: qwen3-tts-api-rocm
+    ports:
+      - "8880:8880"
+    devices:
+      # AMD ROCm devices
+      - /dev/kfd
+      - /dev/dri
+    environment:
+      # ROCm optimization environment variables
+      - MIOPEN_FIND_MODE=FAST
+      - MIOPEN_USER_DB_PATH=/app
+      # Server configuration
+      - HOST=0.0.0.0
+      - PORT=8880
+      - WORKERS=1
+      - CORS_ORIGINS=*
+      # Backend: 'official' or 'optimized'
+      - TTS_BACKEND=${TTS_BACKEND:-official}
+      - TTS_CONFIG=/app/config.rocm.yaml
+      - TTS_WARMUP_ON_START=false
+      - GPU_KEEPALIVE_INTERVAL=${GPU_KEEPALIVE_INTERVAL:-15}
+    volumes:
+      # Mount model cache for persistence
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s

@@ -1,0 +1,87 @@
+# Qwen3-TTS server configuration - ROCm (AMD GPU) optimized
+# Copy this file to ~/qwen3-tts/config.yaml (or point TTS_CONFIG to its location).
+# The optimized backend reads this file at startup.
+
+# Model to load on first request (must match a key in the `models` section below)
+default_model: 0.6B-CustomVoice
+
+# Available models. Each entry maps a short name to a HuggingFace repo id (or
+# a local path) and a model type ("customvoice" or "base").
+#
+# - customvoice  — predefined speakers (Vivian, Ryan, …); fastest for bulk TTS
+# - base         — required for voice cloning (clone: prefix) and voice library
+models:
+  0.6B-CustomVoice:
+    hf_id: Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice
+    type: customvoice
+  0.6B-Base:
+    hf_id: Qwen/Qwen3-TTS-12Hz-0.6B-Base
+    type: base
+  1.7B-CustomVoice:
+    hf_id: Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+    type: customvoice
+  1.7B-Base:
+    hf_id: Qwen/Qwen3-TTS-12Hz-1.7B-Base
+    type: base
+
+# Performance optimizations (only used with TTS_BACKEND=optimized)
+optimization:
+  # Attention implementation.  Options: flash_attention_2 | sdpa | eager
+  # flash_attention_2 is fastest on modern GPUs; falls back to sdpa automatically.
+  attention: sdpa
+
+  # torch.compile mode.  Options: default | reduce-overhead | max-autotune
+  # max-autotune gives the best throughput after a ~75 s compilation on first start.
+  compile_mode: max-autotune
+
+  # Whether to enable torch.compile at all.  Set to false to skip compilation
+  # (faster startup, lower throughput).
+  use_compile: false
+
+  # Whether to capture CUDA graphs (works on both CUDA and ROCm).
+  # Required for max-autotune to reach peak performance.
+  use_cuda_graphs: false   # set true after verifying compile works on your GPU
+
+  # Fast codebook generation (bypasses HuggingFace generate() overhead).
+  use_fast_codebook: true
+
+  # Compile the codebook predictor as well (default true, recommended).
+  compile_codebook_predictor: true
+
+  # Streaming-specific parameters
+  streaming:
+    # Window size (frames) for the sliding streaming decoder.
+    # AMD ROCm: use 72 (values 66/67/71 trigger a CUDA graph capture bug).
+    # NVIDIA CUDA: 64, 72, or 80 all work.
+    decode_window_frames: 72
+
+    # Emit a PCM chunk every N decoded frames.  Lower = lower TTFB but slightly
+    # higher RTF cost.  Recommended: 6 (good TTFB/RTF balance for voice agents).
+    emit_every_frames: 6
+
+# Server listen address and port
+server:
+  host: "0.0.0.0"
+  port: 8880
+
+# Built-in voice definitions (used by the /v1/voices endpoint when the optimized
+# backend is active).  You can add/remove entries here freely.
+voices:
+  - name: Vivian
+    language: Chinese
+  - name: Serena
+    language: Chinese
+  - name: Uncle_Fu
+    language: Chinese
+  - name: Dylan
+    language: Chinese
+  - name: Eric
+    language: Chinese
+  - name: Ryan
+    language: English
+  - name: Aiden
+    language: Japanese
+  - name: Ono_Anna
+    language: Korean
+  - name: Sohee
+    language: English

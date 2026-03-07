@@ -438,6 +438,18 @@ docker-compose down
 
 **Model Cache:** Models are cached in `~/.cache/huggingface` and automatically mounted as a volume for persistence.
 
+## 🖥️ ROCm (AMD GPU) Deployment
+
+For AMD GPUs, use the ROCm-optimized Docker configuration:
+
+### Quick Start with ROCm
+
+```bash
+# Build and run with AMD GPU support
+docker compose -f docker-compose.rocm.yml up
+TTS_BACKEND=optimized docker compose -f docker-compose.rocm.yml up
+```
+
 ## 💻 CPU-Only Deployment
 
 For systems without a GPU (e.g., Intel i5-1240P), use the optimized CPU backend:
