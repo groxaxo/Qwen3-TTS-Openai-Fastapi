@@ -3,7 +3,7 @@
 # The optimized backend reads this file at startup.
 
 # Model to load on first request (must match a key in the `models` section below)
-default_model: 0.6B-CustomVoice
+default_model: 1.7B-CustomVoice
 
 # Available models.  Each entry maps a short name to a HuggingFace repo id (or
 # a local path) and a model type ("customvoice" or "base").

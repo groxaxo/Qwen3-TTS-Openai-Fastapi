@@ -10,20 +10,26 @@ services:
     container_name: qwen3-tts-api
     network_mode: host
     ports:
-      - "8880:8880"
+      - "8881:8880"
     environment:
       - HOST=0.0.0.0
-      - PORT=8880
+      # Bind 8881 on the host (network_mode: host makes the publish mapping
+      # below a no-op, so the in-container PORT is the actual host port).
+      # 8880 is held by opencode-supertonic2.service; we cannot steal it.
+      - PORT=8881
       - WORKERS=1
       - CORS_ORIGINS=*
       - TTS_BACKEND=official
-      - TTS_WARMUP_ON_START=false
+      - TTS_MODEL_NAME=Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+      - TTS_WARMUP_ON_START=true
       # When using device_ids filter, the GPU appears as device 0 inside container
       - CUDA_VISIBLE_DEVICES=0
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
     volumes:
       # Mount model cache for persistence
       - ~/.cache/huggingface:/home/appuser/.cache/huggingface
+      # Mount voice library for persistent voice profiles
+      - ./voice_library:/home/appuser/voice_library
     deploy:
       resources:
         reservations:
@@ -33,7 +39,7 @@ services:
               capabilities: [gpu]
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8881/health"]
       interval: 30s
       timeout: 10s
       retries: 3
