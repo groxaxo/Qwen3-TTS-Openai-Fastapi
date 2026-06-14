@@ -4,13 +4,12 @@
 Tests for backend selection and initialization.
 """
 
-import os
 import sys
 import types
 import asyncio
 import pytest
 import numpy as np
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from api.backends.factory import get_backend, reset_backend
 from api.backends.base import TTSBackend
@@ -685,6 +684,43 @@ class TestMLXGenerateSpeech:
         assert kwargs["language"] == "English"
         assert kwargs["text"] == "Hello MLX."
 
+    def test_generate_speech_releases_unused_mlx_cache(self, monkeypatch):
+        """Completed synthesis should release reusable Metal cache buffers."""
+        fake_model, _ = _install_fake_mlx_audio(
+            monkeypatch,
+            speakers=["Vivian"],
+            languages=["English"],
+            sample_rate=24000,
+        )
+        result = MagicMock()
+        result.audio = np.zeros(1200, dtype=np.float32)
+        fake_model.generate_custom_voice = MagicMock(return_value=[result])
+
+        fake_mlx = types.ModuleType("mlx")
+        fake_core = types.ModuleType("mlx.core")
+        fake_core.eval = MagicMock()
+        fake_core.clear_cache = MagicMock()
+        fake_mlx.core = fake_core
+        monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+        monkeypatch.setitem(sys.modules, "mlx.core", fake_core)
+
+        from api.backends.mlx_qwen3_tts import MLXQwen3TTSBackend
+        backend = MLXQwen3TTSBackend()
+
+        with patch("sys.platform", "darwin"), patch(
+            "platform.machine",
+            return_value="arm64",
+        ):
+            asyncio.get_event_loop().run_until_complete(
+                backend.generate_speech(
+                    text="Release the cache.",
+                    voice="Vivian",
+                    language="English",
+                )
+            )
+
+        fake_core.clear_cache.assert_called_once_with()
+
     def test_generate_speech_routes_alias_to_speaker(self, monkeypatch):
         """The OpenAI alias ``lily`` should be resolved to ``Serena`` before calling the model."""
         fake_model, _ = _install_fake_mlx_audio(
@@ -774,10 +810,7 @@ class TestMLXGenerationSafetyCaps:
     def test_generate_speech_aborts_on_audio_length_cap(self, monkeypatch):
         """If the model produces more than MAX_GENERATED_AUDIO_SECONDS,
         ``generate_speech`` must raise rather than return garbage."""
-        from api.backends.mlx_qwen3_tts import (
-            MLXQwen3TTSBackend,
-            MAX_GENERATED_AUDIO_SECONDS,
-        )
+        from api.backends.mlx_qwen3_tts import MLXQwen3TTSBackend
 
         fake_model, _ = _install_fake_mlx_audio(
             monkeypatch,
@@ -1131,4 +1164,3 @@ class TestMLXLanguageResolution:
         from api.backends.mlx_qwen3_tts import MLXQwen3TTSBackend
         backend = MLXQwen3TTSBackend()
         assert backend._resolve_language("Klingon") == "klingon"
-

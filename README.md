@@ -529,8 +529,8 @@ on Apple hardware.
 
 ### Heads-up: dependency conflict
 
-`mlx-audio 0.3.x` pins `transformers==5.0.0rc3` (a release candidate)
-while the rest of this project pins the stable `transformers==4.57.3`.
+`mlx-audio 0.4.4` requires `transformers>=5.5.0`, while the official
+backend in this project pins `transformers==4.57.3`.
 On a Mac, use a **dedicated virtualenv** for the MLX backend — don't
 add it to an env that already has `qwen_tts` / `transformers 4.x`
 installed. The other backends (`official`, `vllm_omni`, `pytorch`,
@@ -551,7 +551,13 @@ python3.12 -m venv .venv-mlx
 source .venv-mlx/bin/activate
 
 python -m pip install --upgrade pip
-python -m pip install -e ".[api,mlx]"
+python -m pip install \
+  "mlx-audio==0.4.4" \
+  "fastapi>=0.109.0" \
+  "uvicorn[standard]>=0.27.0" \
+  python-multipart "pydantic>=2.0.0" inflect aiofiles pydub \
+  "httpx>=0.24.0" librosa soundfile torch torchaudio
+python -m pip install --no-deps -e .
 
 export TTS_BACKEND=mlx
 export MLX_MODEL_ID=mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit
@@ -616,16 +622,12 @@ curl -N http://localhost:8880/v1/audio/speech \
   --output mac-stream.pcm
 ```
 
-> **Caveat on chunking:** in `mlx-audio 0.3.x` the underlying generator
+> **Legacy caveat:** in `mlx-audio 0.3.x` the underlying generator
 > typically yields a *single* full-audio chunk per call (the
 > `streaming_interval` parameter is accepted but not yet honored — see
 > upstream issue [#720](https://github.com/Blaizzy/mlx-audio/issues/720)).
-> The transport path is still real: the first chunk reaches the client
-> as soon as MLX-Audio finishes the generation, which is faster than
-> the non-streaming path because the FastAPI side can start flushing
-> bytes to the wire immediately. Newer `mlx-audio` versions that do
-> honor `streaming_interval` will produce multiple incremental chunks
-> with no further code changes on this side.
+> Use `mlx-audio>=0.4.4`; `0.4.2` fixed a Qwen3-TTS streaming memory
+> leak, and `0.4.4` is the version validated by this repository.
 
 ### What ships and what doesn't
 
@@ -648,7 +650,7 @@ curl -N http://localhost:8880/v1/audio/speech \
 
 ### Performance tips and observed numbers
 
-Reference: Apple Silicon (M-series) running `mlx-audio 0.3.0` and the
+Reference: Apple Silicon running `mlx-audio 0.4.4` and the
 `0.6B-CustomVoice-8bit` checkpoint.
 
 - Stick to `WORKERS=1` and `TTS_MAX_CONCURRENT=1`. MLX-Audio holds the
@@ -662,9 +664,30 @@ Reference: Apple Silicon (M-series) running `mlx-audio 0.3.0` and the
   balance. Hugging Face lists larger 1.7B MLX builds if you have the
   RAM.
 
-### ⚠️ Known upstream bug: intermittent model wedges (mlx-audio 0.3.x)
+#### Measured 0.3.0 to 0.4.4 comparison
 
-The bundled `mlx-audio 0.3.x` has a graph-compile bug that
+Measured on June 14, 2026 using an Apple M5 MacBook Air with 24 GB
+unified memory, the same 0.6B CustomVoice 8-bit checkpoint, Vivian,
+single concurrency, three warm non-streaming WAV requests, and the
+same 128-character prompt. The 0.4.4 path also calls
+`mlx.core.clear_cache()` after copying the completed waveform to
+NumPy; this releases unused Metal scratch buffers without unloading
+model parameters.
+
+| Runtime | Median wall | Median audio | RTF | Peak unified memory | Peak Metal graphics | Idle unified memory |
+|---|---:|---:|---:|---:|---:|---:|
+| mlx-audio 0.3.0 | 5.604s | 12.800s | 0.438 | 6.821 GB | 6.387 GB | 2.912 GB |
+| mlx-audio 0.4.4 + cache release | 3.947s | 11.600s | 0.340 | 5.652 GB | 5.221 GB | 2.319 GB |
+
+This reduced active unified-memory peak by 17.1%, Metal peak by 18.3%,
+idle unified memory by 20.4%, and normalized generation time by 22.4%.
+All six comparison WAVs transcribed the complete prompt with local
+Parakeet ASR and had zero clipped samples. No 4-bit quantization was
+used.
+
+### Legacy upstream bug: intermittent model wedges (mlx-audio 0.3.x)
+
+The unsupported `mlx-audio 0.3.x` line has a graph-compile bug that
 **intermittently** puts the model into a degraded state on Apple
 Silicon. The bug can surface either as a hang (the model's
 generator never yields) or as extremely slow generation (60-180s

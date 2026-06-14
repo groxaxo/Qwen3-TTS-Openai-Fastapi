@@ -305,9 +305,9 @@ class MLXQwen3TTSBackend(TTSBackend):
             audio = np.concatenate(chunks).astype(np.float32, copy=False)
 
             if speed != 1.0:
-                import librosa
+                from librosa.effects import time_stretch
 
-                audio = librosa.effects.time_stretch(
+                audio = time_stretch(
                     audio,
                     rate=speed,
                 ).astype(np.float32, copy=False)
@@ -349,6 +349,15 @@ class MLXQwen3TTSBackend(TTSBackend):
                 f"server. Using TTS_WARMUP_ON_START=true at boot will "
                 f"absorb the bad cold call before users hit it."
             ) from None
+        finally:
+            try:
+                import mlx.core as mx  # type: ignore
+
+                # Release reusable Metal scratch buffers after the waveform has
+                # been copied to NumPy. Model parameters remain resident.
+                mx.clear_cache()
+            except (ImportError, AttributeError):
+                pass
 
     # ------------------------------------------------------------------
     # Streaming
@@ -545,9 +554,9 @@ class MLXQwen3TTSBackend(TTSBackend):
                 chunk = self._result_to_numpy(payload)
 
                 if speed != 1.0:
-                    import librosa
+                    from librosa.effects import time_stretch
 
-                    chunk = librosa.effects.time_stretch(
+                    chunk = time_stretch(
                         chunk,
                         rate=speed,
                     ).astype(np.float32, copy=False)

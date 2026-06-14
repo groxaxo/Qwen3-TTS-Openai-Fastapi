@@ -5,11 +5,11 @@
 #   fast  → 0.6B CustomVoice 8bit on :18881  (low latency, default for talk.sh)
 #   hq    → 1.7B CustomVoice 8bit on :18882  (higher quality, more latency/RAM)
 #
-# Separate processes (not one multi-model server) are intentional: mlx-audio
-# 0.3.x can wedge on a cold-start graph compile, and isolating each model keeps
-# one wedge from taking down the other. Each instance boots with
-# TTS_WARMUP_ON_START=true to absorb that cold call, and TTS_IDLE_TIMEOUT_SECONDS=0
-# so it stays up indefinitely.
+# Separate processes (not one multi-model server) are intentional: each model
+# has a large Metal working set, and isolation prevents one instance from
+# taking down the other. Each instance boots with TTS_WARMUP_ON_START=true to
+# absorb cold graph compilation, and TTS_IDLE_TIMEOUT_SECONDS=0 so it stays up
+# indefinitely.
 #
 # Only CustomVoice checkpoints work (the backend calls generate_custom_voice).
 # Base models load but cannot synthesize the preset voices — do not use them.

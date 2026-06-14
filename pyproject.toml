@@ -48,16 +48,13 @@ vllm = [
 ]
 mlx = [
   # The 0.6B CustomVoice 8-bit MLX checkpoint
-  # (``mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit``) was
-  # converted with mlx-audio 0.3.x. Both 0.3.0 and 0.3.1 pin
-  # ``transformers==5.0.0rc3`` (a release candidate), which
-  # conflicts with the rest of this project that pins the stable
-  # ``transformers==4.57.3``. Allow ``mlx-audio>=0.3.0`` so users
-  # on Apple Silicon can opt into the MLX backend by itself, in a
-  # separate virtualenv from the official / vLLM / PyTorch backends
-  # if they need to keep both. The ``[mlx]`` extra is only enabled
-  # on macOS arm64.
-  "mlx-audio>=0.3.0; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.10'",
+  # (``mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit``) is
+  # validated with mlx-audio 0.4.4. That release requires
+  # ``transformers>=5.5.0``, which conflicts with the official backend's
+  # ``transformers==4.57.3`` pin, so the MLX backend still belongs in a
+  # dedicated virtualenv. Keep the minor series bounded until a newer
+  # release is benchmarked on the Mac path.
+  "mlx-audio>=0.4.4,<0.5; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.10'",
   "huggingface_hub[hf_xet]; sys_platform == 'darwin' and platform_machine == 'arm64' and python_version >= '3.10'",
 ]
 dev = [
