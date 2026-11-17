@@ -4,7 +4,7 @@ The default installation uses [faster-qwen3-tts](https://github.com/andimarafiot
 
 ## Install and run
 
-Requirements: Linux x86_64, NVIDIA Ampere or newer, a driver compatible with CUDA 12.8 wheels, existing Conda/Miniforge, and Git/FFmpeg/libsndfile/sox. Tested with an RTX 3060 12 GB. Available VRAM depends on other processes. Allow at least 25 GB disk space for environments and weights, more for Docker builds.
+Requirements: Linux x86_64, NVIDIA Ampere or newer, a driver compatible with CUDA 12.8 wheels, existing Conda/Miniforge, and Git/FFmpeg/libsndfile/sox. Tested with an RTX 3060 12 GB. Available VRAM depends on other processes. Allow at least 45 GB free for two environments, weights, and pip caches; allow 60 GB or more for Docker build caches and image layers.
 
 ```bash
 # Debian/Ubuntu system dependencies:
