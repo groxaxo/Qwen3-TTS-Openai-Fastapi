@@ -597,7 +597,7 @@ class TestMLXBackendInitialize:
 
         with patch("sys.platform", "darwin"), patch("platform.machine", return_value="arm64"), \
              patch.object(builtins, "__import__", side_effect=guarded_import):
-            with pytest.raises(RuntimeError, match=r"\[api,mlx\]"):
+            with pytest.raises(RuntimeError, match=r"requirements/mlx\.txt"):
                 asyncio.get_event_loop().run_until_complete(backend.initialize())
 
 
