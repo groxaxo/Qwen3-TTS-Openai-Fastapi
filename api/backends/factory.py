@@ -63,7 +63,7 @@ def get_backend() -> TTSBackend:
     if _backend_instance is not None:
         return _backend_instance
 
-    backend_type = os.getenv("TTS_BACKEND", "official").strip().lower()
+    backend_type = os.getenv("TTS_BACKEND", "cuda_graphs").strip().lower()
     configured_model = os.getenv("TTS_MODEL_NAME") or os.getenv("TTS_MODEL_ID")
     model_name = (configured_model or _DEFAULT_MODEL).strip()
 
@@ -81,7 +81,11 @@ def get_backend() -> TTSBackend:
 
     # Imports are deliberately local. Optional backends must not make the
     # default installation fail merely because their dependencies are absent.
-    if backend_type == "optimized":
+    if backend_type == "cuda_graphs":
+        from .cuda_graphs import CUDAGraphBackend
+
+        _backend_instance = CUDAGraphBackend(model_name=model_name)
+    elif backend_type == "optimized":
         from .optimized_backend import OptimizedQwen3TTSBackend
 
         _backend_instance = OptimizedQwen3TTSBackend()
@@ -140,7 +144,7 @@ def get_backend() -> TTSBackend:
     else:
         raise ValueError(
             f"Unknown TTS_BACKEND: {backend_type!r}. Supported values: "
-            "optimized, official, vllm_omni, pytorch, openvino, mlx"
+            "'cuda_graphs', 'optimized', 'official', 'vllm_omni', 'pytorch', 'openvino', 'mlx'"
         )
 
     logger.info(

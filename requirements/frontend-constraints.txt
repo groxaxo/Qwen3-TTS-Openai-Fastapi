@@ -1,0 +1,5 @@
+# Keep the frontend's original qwen_tts package separate from qwen-tts-hf.
+torch==2.9.1
+torchaudio==2.9.1
+transformers==4.57.3
+accelerate==1.12.0

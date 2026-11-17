@@ -12,13 +12,16 @@ services:
       PORT: 8880
       WORKERS: 1
       CORS_ORIGINS: "${CORS_ORIGINS:-*}"
-      TTS_BACKEND: official
-      TTS_MODEL_NAME: "${TTS_MODEL_NAME:-Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice}"
-      TTS_WARMUP_ON_START: "${TTS_WARMUP_ON_START:-false}"
+      TTS_BACKEND: cuda_graphs
+      TTS_MODEL_NAME: "${TTS_MODEL_NAME:-${TTS_MODEL_ID:-Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice}}"
+      TTS_LAZY_LOAD: "false"
+      TTS_STARTUP_TIMEOUT: "${TTS_STARTUP_TIMEOUT:-900}"
+      TTS_MODEL_REVISION: "${TTS_MODEL_REVISION:-}"
       TTS_IDLE_TIMEOUT_SECONDS: "${TTS_IDLE_TIMEOUT_SECONDS:-0}"
       NVIDIA_DRIVER_CAPABILITIES: compute,utility
     volumes:
-      - "${HF_CACHE_DIR:-~/.cache/huggingface}:/home/appuser/.cache/huggingface"
+      - "hf-cache:/home/appuser/.cache/huggingface"
+      - "voice-library:/app/voice_library"
     deploy:
       resources:
         reservations:
@@ -26,13 +29,14 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+    stop_grace_period: 60s
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8880/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 120s
+      start_period: 900s
 
   qwen3-tts-vllm:
     build:
@@ -103,3 +107,7 @@ services:
       retries: 3
       start_period: 180s
     profiles: [cpu]
+
+volumes:
+  hf-cache:
+  voice-library:

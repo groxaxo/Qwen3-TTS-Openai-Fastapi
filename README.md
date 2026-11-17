@@ -9,7 +9,7 @@ This repository is based on the Qwen3-TTS implementation from the Alibaba Qwen t
 - OpenAI-compatible `POST /v1/audio/speech`
 - Model and voice discovery under `/v1/models` and `/v1/voices`
 - MP3, Opus, AAC, FLAC, WAV, and signed 16-bit PCM output
-- Official, optimized, vLLM-Omni, PyTorch CPU, OpenVINO, and MLX backends
+- CUDA graphs (default), official, optimized, vLLM-Omni, PyTorch CPU, OpenVINO, and MLX backends
 - Base-model voice cloning through `/v1/audio/voice-clone`
 - Persistent voice-library profiles through `voice="clone:ProfileName"`
 - Lazy model loading, bounded generation concurrency, warmup, and health checks
@@ -38,22 +38,30 @@ For normal OpenAI-style TTS, start with a **CustomVoice** checkpoint. For voice 
 
 WAV and PCM output do not require FFmpeg.
 
-## Quick start
+## Quick start (default: NVIDIA CUDA graphs + Conda)
+
+For Linux x86_64 with an NVIDIA Ampere-or-newer GPU, start with the **1.7B CustomVoice CUDA-graph runtime**. Tested on an RTX 3060 12 GB. Install [Miniforge/Conda](https://github.com/conda-forge/miniforge), a driver compatible with CUDA 12.8 wheels, and `git`, `ffmpeg`, `libsndfile1`, and `sox` first.
 
 ```bash
 git clone https://github.com/groxaxo/Qwen3-TTS-Openai-Fastapi.git
 cd Qwen3-TTS-Openai-Fastapi
 
-python3.12 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -e ".[api]"
-
-# Default backend: official, 1.7B CustomVoice
-python -m api.main
+./scripts/install.sh
+./start_server.sh
 ```
 
-The server listens on `http://localhost:8880` by default.
+The API binds to `0.0.0.0:8880`. The launcher starts a private worker on `127.0.0.1:18881`, waits for model download/capture/warmup, then starts the API. Ctrl+C stops both processes. The installer reuses existing `qwen3-tts` and `qwen3-tts-graphs` Conda environments or creates them with Python 3.12. It updates their dependencies to the tested pins; choose different prefixes if those names belong to other projects.
+
+```bash
+# Optional: choose existing Conda prefixes before install and startup.
+export CONDA_EXE="$HOME/miniforge3/bin/conda"
+export TTS_FRONTEND_ENV="$HOME/miniforge3/envs/qwen3-tts"
+export TTS_GRAPH_ENV="$HOME/miniforge3/envs/qwen3-tts-graphs"
+# Optional: select a GPU and API port.
+CUDA_VISIBLE_DEVICES=0 PORT=18880 ./start_server.sh
+```
+
+The environments must remain separate: the API uses Transformers 4, the worker uses Transformers 5, and both distributions expose `qwen_tts`. The launcher handles the worker's import isolation. See [the full runtime guide](docs/cuda-graphs.md) for offline use, model revisions, systemd, benchmarking, and troubleshooting.
 
 Useful URLs:
 
@@ -63,7 +71,20 @@ Useful URLs:
 - Models: `http://localhost:8880/v1/models`
 - Voices: `http://localhost:8880/v1/voices`
 
-The backend loads lazily by default, so `/health` can report `initializing` until the first synthesis request.
+The default launcher warms the worker before accepting requests. Direct `python -m api.main` runs only the API; use the launcher to manage both processes.
+
+### Other platforms and model features
+
+CPU, ROCm, MLX, Base-model cloning, and other backends remain explicit alternatives. For the official backend, install the API in its own environment:
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[api]"
+TTS_BACKEND=official python -m api.main
+```
+
+The CUDA-graph default supports **CustomVoice preset speakers**. Base-model cloning requires a compatible alternative backend such as `official`.
 
 ## OpenAI Python client
 
@@ -157,7 +178,7 @@ Encoding errors fail clearly. The server does **not** return WAV bytes while cla
 
 ## Real-time PCM streaming
 
-The optimized backend can yield PCM while the model is generating. Use `stream=true` and `response_format="pcm"`.
+The default CUDA-graph backend and the optimized backend yield PCM while the model generates. Use `stream=true` and `response_format="pcm"`. Public PCM is mono signed 16-bit little-endian at 24 kHz. Disable response buffering in reverse proxies to preserve first-audio latency.
 
 ```python
 import httpx
@@ -193,7 +214,8 @@ Set `TTS_BACKEND` before starting the server.
 
 | Backend | Value | Recommended use |
 |---|---|---|
-| Official | `official` | Default, broad feature compatibility |
+| CUDA graphs | `cuda_graphs` | Default NVIDIA CustomVoice runtime, native PCM streaming |
+| Official | `official` | Broad feature compatibility and Base-model cloning |
 | Optimized | `optimized` | GPU production, model switching, native PCM streaming, voice library |
 | vLLM-Omni | `vllm_omni` | Dedicated high-throughput vLLM deployment |
 | PyTorch CPU | `pytorch` | CPU-only systems |
@@ -362,19 +384,29 @@ The included launcher manages isolated 0.6B and 1.7B MLX instances:
 
 ### NVIDIA GPU
 
+The default image uses the same pinned, isolated Conda environments and supervisor as the native installation. Install [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) and use a driver compatible with CUDA 12.8 wheels. No FlashAttention compilation or host CUDA toolkit is required.
+
 ```bash
-docker compose up --build qwen3-tts-gpu
+docker compose up --build -d
+docker compose logs -f qwen3-tts-gpu
 ```
 
-Override the host port or model without editing Compose:
+Override the host port without editing Compose:
 
 ```bash
 TTS_PORT=9000 \
-TTS_MODEL_NAME=Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice \
 docker compose up --build qwen3-tts-gpu
 ```
 
-The Compose file requests one GPU instead of hard-coding a host GPU index.
+Compose requests one GPU and publishes only the API port. Named volumes retain the model cache and voice library. Allow several minutes for the first model download and graph capture. `docker compose down` stops both processes and retains cached weights.
+
+Without Compose:
+
+```bash
+docker build -t qwen3-tts .
+docker run --rm --gpus '"device=0"' -p 8880:8880 \
+  -v qwen3-tts-hf:/home/appuser/.cache/huggingface qwen3-tts
+```
 
 ### vLLM
 
@@ -403,8 +435,13 @@ Review device mappings in `docker-compose.rocm.yml`; render-node names vary betw
 | `HOST` | `0.0.0.0` | Bind address |
 | `PORT` | `8880` | Listen port |
 | `WORKERS` | `1` | Uvicorn worker processes; each process loads its own model |
-| `TTS_BACKEND` | `official` | Backend selector |
+| `TTS_BACKEND` | `cuda_graphs` | Backend selector; start_server.sh supervises the worker |
 | `TTS_MODEL_NAME` / `TTS_MODEL_ID` | backend-specific | Hugging Face ID or local model path |
+| `TTS_MODEL_REVISION` | unset | Optional HF commit/tag used by the graph installer and worker |
+| `TTS_FRONTEND_ENV` / `TTS_GRAPH_ENV` | Conda prefixes above | Separate API and worker environments |
+| `TTS_GRAPH_PORT` | `18881` | Private loopback worker port |
+| `TTS_GRAPH_WORKER_URL` | `http://127.0.0.1:18881` | Worker URL for manually managed API processes |
+| `TTS_STARTUP_TIMEOUT` | `900` | Launcher deadline for download/capture/warmup |
 | `TTS_LAZY_LOAD` | `true` | Load on first synthesis request |
 | `TTS_WARMUP_ON_START` | `false` | Warm regular and supported streaming paths |
 | `TTS_WARMUP_MAX_SECONDS` | `10` | Timeout per warmup request |
@@ -426,6 +463,8 @@ Review device mappings in `docker-compose.rocm.yml`; render-node names vary betw
 | `MLX_MODEL_ID` | 0.6B CustomVoice 8-bit | MLX checkpoint |
 
 Invalid integer settings fall back to safe defaults instead of crashing module import.
+
+The default launcher sets `TTS_LAZY_LOAD=false`, `TTS_MIN_CHUNK_CHARS=200`, and `TTS_MAX_CHUNK_CHARS=600`. CUDA graphs use BF16, SDPA, one GPU, one API worker, and one active generation. See [runtime settings and measured performance](docs/cuda-graphs.md).
 
 ## CORS and network exposure
 
