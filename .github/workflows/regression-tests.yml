@@ -35,4 +35,4 @@ jobs:
         run: python -m compileall -q api scripts tests/test_regressions.py tests/test_cuda_graphs_backend.py tests/test_runtime_launcher.py
 
       - name: Run regression tests
-        run: pytest -q tests/test_regressions.py tests/test_cuda_graphs_backend.py tests/test_runtime_launcher.py
+        run: pytest -q tests/test_regressions.py tests/test_cuda_graphs_backend.py tests/test_runtime_launcher.py tests/test_mlx_stream_cleanup.py

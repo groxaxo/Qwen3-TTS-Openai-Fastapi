@@ -18,8 +18,9 @@ import asyncio
 import logging
 import platform
 import sys
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as WorkerTimeoutError
 from typing import (
     Any,
     AsyncGenerator,
@@ -146,7 +147,7 @@ class MLXQwen3TTSBackend(TTSBackend):
             except ImportError as exc:
                 raise RuntimeError(
                     "MLX dependencies are missing. Install with: "
-                    'pip install -e ".[api,mlx]"'
+                    'pip install -r requirements/mlx.txt in a dedicated environment'
                 ) from exc
 
             # transformers 5.0.0rc3 logs a one-time "incorrect regex
@@ -402,12 +403,28 @@ class MLXQwen3TTSBackend(TTSBackend):
 
         queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=4)
         loop = asyncio.get_running_loop()
+        stopped = threading.Event()
+
+        def publish(item: Any) -> bool:
+            """Bound backpressure waits so a disconnected client frees the worker."""
+            if stopped.is_set():
+                return False
+            pending = asyncio.run_coroutine_threadsafe(queue.put(item), loop)
+            while not stopped.is_set():
+                try:
+                    pending.result(timeout=0.05)
+                    return True
+                except WorkerTimeoutError:
+                    pass
+            pending.cancel()
+            return False
 
         def _run_generator() -> None:
             """Worker thread: pull chunks from the sync generator and
             push them into the asyncio queue. Sentinel ``None`` marks
             the end; exceptions are forwarded as ``("error", exc)``.
             """
+            source_iter = None
             try:
                 kwargs: Dict[str, Any] = {
                     "text": text,
@@ -440,7 +457,6 @@ class MLXQwen3TTSBackend(TTSBackend):
                         )
                     )
 
-                source_iter = None
                 try:
                     gen = self.model.generate(**kwargs)
                     # Probe: yields the first chunk or raises.
@@ -461,16 +477,17 @@ class MLXQwen3TTSBackend(TTSBackend):
                 else:
                     # Yield the probed chunk then chain the rest of
                     # the original generator.
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(("chunk", first)), loop
-                    ).result()
                     source_iter = gen
+                    if not publish(("chunk", first)):
+                        return
 
                 # mlx-audio 0.3.x can also hang in the streaming path
                 # (cold graph compile, model never finishes). Bound the
                 # wall clock so a stuck call fails fast instead of
                 # wedging the server.
                 for result in source_iter:
+                    if stopped.is_set():
+                        break
                     if (
                         time.monotonic() - start
                         > MAX_GENERATION_WALL_SECONDS
@@ -485,17 +502,17 @@ class MLXQwen3TTSBackend(TTSBackend):
                             f"absorb the cold-start graph compile at "
                             f"boot."
                         )
-                    asyncio.run_coroutine_threadsafe(
-                        queue.put(("chunk", result)), loop
-                    ).result()
+                    if not publish(("chunk", result)):
+                        break
             except BaseException as exc:  # noqa: BLE001
-                asyncio.run_coroutine_threadsafe(
-                    queue.put(("error", exc)), loop
-                ).result()
+                publish(("error", exc))
             finally:
-                asyncio.run_coroutine_threadsafe(
-                    queue.put(None), loop
-                ).result()
+                try:
+                    close = getattr(source_iter, "close", None)
+                    if close is not None:
+                        close()
+                finally:
+                    publish(None)
 
         # Run the blocking generator in our dedicated thread so it
         # shares the same MLX model state as ``generate_speech``.
@@ -560,6 +577,7 @@ class MLXQwen3TTSBackend(TTSBackend):
         finally:
             # Make sure the worker thread exits even if the consumer
             # bails out early.
+            stopped.set()
             try:
                 await asyncio.wrap_future(future)
             except Exception:

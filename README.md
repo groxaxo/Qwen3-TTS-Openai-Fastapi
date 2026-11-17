@@ -356,29 +356,22 @@ The active backend/checkpoint must support voice cloning. See `docs/voice-librar
 
 ## Apple Silicon / MLX
 
-Use a dedicated virtual environment because `mlx-audio` can require a different Transformers version from the official backend stack.
+Use a dedicated Conda environment for the current MLX runtime. The root `qwen-tts` package pins Transformers 4, while MLX-Audio 0.6.2 uses Transformers 5. Install the standalone MLX requirements and run the API from the checkout.
 
 ```bash
-brew install python@3.12 ffmpeg
-python3.12 -m venv .venv-mlx
-source .venv-mlx/bin/activate
-pip install --upgrade pip
-pip install -e ".[api,mlx]"
+brew install ffmpeg
+conda create -y -n qwen3-tts-mlx -c conda-forge python=3.11 pip
+conda activate qwen3-tts-mlx
+python -m pip install -r requirements/mlx.txt
 
 TTS_BACKEND=mlx \
-MLX_MODEL_ID=mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-8bit \
+MLX_MODEL_ID=mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit \
+PORT=18882 TTS_LAZY_LOAD=false TTS_WARMUP_ON_START=true \
+TTS_WARMUP_MAX_SECONDS=60 TTS_MIN_CHUNK_CHARS=200 TTS_MAX_CHUNK_CHARS=600 \
 python -m api.main
 ```
 
-The included launcher manages isolated 0.6B and 1.7B MLX instances:
-
-```bash
-./run_tts.sh          # 1.7B HQ on port 18882
-./run_tts.sh fast     # 0.6B on port 18881
-./run_tts.sh both
-./run_tts.sh status
-./run_tts.sh stop
-```
+This binds to `0.0.0.0:18882`, warms the model, and uses one generation at a time. Keep the API running for warm latency. See [the M5 benchmark and reproduction guide](docs/mlx-benchmark.md) for measured speed, versions, streaming, and limitations.
 
 ## Docker
 
