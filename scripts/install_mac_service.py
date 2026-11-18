@@ -6,6 +6,7 @@ import platform
 import plistlib
 import subprocess
 import sys
+from urllib.parse import urlsplit
 
 from huggingface_hub import snapshot_download
 
@@ -24,11 +25,28 @@ def main():
     parser.add_argument("--port", type=int, default=18882)
     parser.add_argument("--library-dir", type=Path,
                         default=Path.home() / "Library/Application Support/Qwen3-TTS/voices")
+    parser.add_argument("--tailscale-origin", help="HTTPS origin reported by Tailscale Serve")
+    parser.add_argument("--tailscale-login", help="Tailscale login allowed to use the studio")
     args = parser.parse_args()
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         parser.error("This launchd installer requires Apple Silicon macOS.")
     if not 1 <= args.port <= 65535:
         parser.error("Port must be between 1 and 65535.")
+    if bool(args.tailscale_origin) != bool(args.tailscale_login):
+        parser.error("--tailscale-origin and --tailscale-login must be supplied together.")
+    if args.tailscale_origin:
+        try:
+            origin = urlsplit(args.tailscale_origin.rstrip("/"))
+            valid_origin = (
+                origin.scheme == "https" and (origin.hostname or "").endswith(".ts.net")
+                and origin.username is None and not origin.path and not origin.query
+                and not origin.fragment and (origin.port is None or origin.port > 0)
+                and args.tailscale_origin.rstrip("/") == f"https://{origin.netloc}"
+            )
+        except ValueError:
+            valid_origin = False
+        if not valid_origin or not args.tailscale_login.strip():
+            parser.error("Use a Tailscale HTTPS origin with no path and a nonempty login.")
     models = {name: snapshot_download(name, revision=revision)
               for name, revision in REVISIONS.items()}
     library = args.library_dir.expanduser().resolve()
@@ -50,6 +68,9 @@ def main():
         "PYTHONUNBUFFERED": "1", "CORS_ORIGINS": f"http://127.0.0.1:{args.port},http://localhost:{args.port}",
         "PATH": "/opt/homebrew/bin:/usr/bin:/bin",
     }
+    if args.tailscale_origin:
+        env["VOICE_STUDIO_TAILSCALE_ORIGIN"] = f"https://{origin.netloc.lower()}"
+        env["VOICE_STUDIO_TAILSCALE_LOGIN"] = args.tailscale_login.strip()
     payload = {
         "Label": LABEL, "ProgramArguments": [sys.executable, "-m", "api.main"],
         "WorkingDirectory": str(ROOT), "EnvironmentVariables": env,

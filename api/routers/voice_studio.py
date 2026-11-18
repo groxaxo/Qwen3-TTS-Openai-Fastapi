@@ -1,12 +1,13 @@
 """Local voice library editor and audition endpoints."""
 import asyncio
-import io
 import json
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlsplit
 from uuid import uuid4
 
 import numpy as np
@@ -15,25 +16,44 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, Response
 
 from .openai_compatible import VOICE_LIBRARY_DIR, _generation_semaphore, get_tts_backend
-from ..services.audio_encoding import encode_audio
+from ..services.audio_encoding import convert_to_wav, encode_audio
 
-MAX_UPLOAD = 15 * 1024 * 1024
+MAX_UPLOAD = 100 * 1024 * 1024
+REFERENCE_RATE = 24000
+MAX_REFERENCE_SAMPLES = 30 * REFERENCE_RATE
+REFERENCE_FORMATS = (
+    "aac,ac3,aiff,alac,amr,ape,asf,au,avi,caf,eac3,flac,flv,matroska,webm,"
+    "mov,mp4,m4a,3gp,3g2,mj2,mp3,mpeg,mpegts,ogg,tta,w64,wav,wv"
+)
+reference_conversions = asyncio.Semaphore(2)
 LANGUAGES = ("Auto", "English", "Chinese", "Japanese", "Korean", "German",
              "French", "Spanish", "Russian", "Portuguese", "Italian")
 
 
 def local_browser(request: Request):
-    host = request.headers.get("host", "")
-    allowed = {"127.0.0.1", "localhost", "::1"}
+    host = request.headers.get("host", "").lower()
     origin = request.headers.get("origin")
+    login = request.headers.get("tailscale-user-login")
+    tailscale_origin = os.getenv("VOICE_STUDIO_TAILSCALE_ORIGIN", "")
+    tailscale_login = os.getenv("VOICE_STUDIO_TAILSCALE_LOGIN", "")
+    local = (
+        request.client is not None
+        and request.client.host in {"127.0.0.1", "::1"}
+        and re.fullmatch(r"(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?", host)
+        and not login
+        and (not origin or origin in {f"http://{host}", f"https://{host}"})
+    )
+    # Deploy only behind Tailscale Serve on a loopback-bound listener. Serve
+    # strips supplied identity headers and injects the authenticated login.
+    tailnet = (
+        tailscale_origin == f"https://{host}" and bool(tailscale_login)
+        and login == tailscale_login and (not origin or origin == tailscale_origin)
+    )
     if (
-        request.client is None
-        or request.client.host not in {"127.0.0.1", "::1"}
-        or urlsplit("//" + host).hostname not in allowed
-        or (origin and urlsplit(origin).netloc != host)
+        not (local or tailnet)
         or request.headers.get("sec-fetch-site") == "cross-site"
     ):
-        raise HTTPException(403, "Voice Studio is available on localhost.")
+        raise HTTPException(403, "Use localhost or the configured Tailscale account.")
 
 
 router = APIRouter(dependencies=[Depends(local_browser)])
@@ -94,12 +114,63 @@ def decode_reference(source):
         raise HTTPException(422, f"Invalid reference recording. {error}") from None
 
 
+def normalize_upload(source):
+    if source.seek(0, os.SEEK_END) > MAX_UPLOAD:
+        raise HTTPException(413, "Reference file must be 100 MiB or smaller.")
+    source.seek(0)
+    # Reuse a normalized WAV sent back by the browser on preview or save.
+    try:
+        with sf.SoundFile(source) as audio:
+            if (audio.format == "WAV" and audio.subtype == "PCM_16"
+                    and audio.samplerate == REFERENCE_RATE and audio.channels == 1
+                    and REFERENCE_RATE <= audio.frames <= MAX_REFERENCE_SAMPLES):
+                samples = audio.read(dtype="float32")
+                if samples.size >= REFERENCE_RATE and np.max(np.abs(samples)) >= 0.0001:
+                    return samples, False
+    except (ValueError, RuntimeError):
+        pass
+    source.seek(0)
+
+    # A seekable, private input also supports MP4s with metadata at the end.
+    # Only decode standalone media containers and keep network protocols disabled.
+    with tempfile.NamedTemporaryFile(prefix="qwen-reference-") as media:
+        shutil.copyfileobj(source, media)
+        media.flush()
+        try:
+            result = subprocess.run([
+                "ffmpeg", "-nostdin", "-v", "error", "-protocol_whitelist", "file,pipe",
+                "-format_whitelist", REFERENCE_FORMATS, "-threads", "2", "-i", media.name,
+                "-map", "0:a:0", "-vn", "-sn", "-dn", "-ac", "1", "-ar", str(REFERENCE_RATE),
+                # Decode slightly past the limit to detect that the clip was shortened.
+                "-t", "30.01", "-f", "s16le", "-c:a", "pcm_s16le", "pipe:1",
+            ], stdin=subprocess.DEVNULL, capture_output=True, check=True, timeout=30)
+        except FileNotFoundError:
+            raise HTTPException(503, "Reference conversion requires FFmpeg.") from None
+        except subprocess.TimeoutExpired:
+            raise HTTPException(422, "Reference conversion timed out. Try a shorter file.") from None
+        except subprocess.CalledProcessError:
+            raise HTTPException(
+                422, "Could not read an audio track. Choose a supported file with sound."
+            ) from None
+    samples = np.frombuffer(result.stdout, dtype="<i2")
+    if samples.size < REFERENCE_RATE:
+        raise HTTPException(422, "The reference must contain at least one second of audio.")
+    trimmed = samples.size > MAX_REFERENCE_SAMPLES
+    samples = samples[:MAX_REFERENCE_SAMPLES].astype(np.float32) / 32768
+    if np.max(np.abs(samples)) < 0.0001:
+        raise HTTPException(422, "The reference recording is silent.")
+    return samples, trimmed
+
+
+async def normalize_reference(reference: UploadFile):
+    async with reference_conversions:
+        return await asyncio.to_thread(normalize_upload, reference.file)
+
+
 async def get_reference(reference, profile_id=None):
     if reference is not None:
-        data = await reference.read(MAX_UPLOAD + 1)
-        if len(data) > MAX_UPLOAD:
-            raise HTTPException(413, "Reference file must be 15 MB or smaller.")
-        return await asyncio.to_thread(decode_reference, io.BytesIO(data))
+        samples, _ = await normalize_reference(reference)
+        return samples, REFERENCE_RATE
     if profile_id:
         path = reference_path(profile_id, read_profile(profile_id))
         return await asyncio.to_thread(decode_reference, path)
@@ -116,6 +187,15 @@ def validate_settings(language, transcript, speaker_only):
 @router.get("/studio", include_in_schema=False)
 async def studio():
     return FileResponse(Path(__file__).parents[1] / "static" / "voice-studio.html")
+
+
+@router.post("/studio/api/reference/normalize")
+async def upload_reference(reference: UploadFile = File(...)):
+    samples, trimmed = await normalize_reference(reference)
+    wav = await asyncio.to_thread(convert_to_wav, samples, REFERENCE_RATE)
+    return Response(wav, media_type="audio/wav", headers={
+        "Cache-Control": "no-store", "X-Reference-Trimmed": str(trimmed).lower(),
+    })
 
 
 @router.get("/studio/api/voices")

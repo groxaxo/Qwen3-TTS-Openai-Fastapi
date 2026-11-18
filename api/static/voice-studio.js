@@ -106,17 +106,34 @@ function payload() {
   return data;
 }
 
-function useFile(file) {
+async function useFile(file) {
   if (!file || local.busy) return;
-  if (file.size > 15 * 1024 * 1024) {
-    status("Choose a recording up to 15 MB.", true);
+  if (file.size > 100 * 1024 * 1024) {
+    fields.reference.value = "";
+    status("Choose a file up to 100 MiB.", true);
     return;
   }
-  if (inputUrl) URL.revokeObjectURL(inputUrl);
-  inputUrl = URL.createObjectURL(file);
-  local.file = file;
-  source(inputUrl, file.name);
-  status("Reference selected. Preview it or save it to the voice library.");
+  const body = new FormData();
+  body.append("reference", file);
+  setBusy(true);
+  status("Preparing reference audio…");
+  try {
+    const response = await request("reference/normalize", {method: "POST", body});
+    const trimmed = response.headers.get("X-Reference-Trimmed") === "true";
+    local.file = new File([await response.blob()], "reference.wav", {type: "audio/wav"});
+    if (inputUrl) URL.revokeObjectURL(inputUrl);
+    inputUrl = URL.createObjectURL(local.file);
+    clearResult();
+    source(inputUrl, file.name + (trimmed ? " · First 30 seconds" : ""));
+    status(trimmed
+      ? "Reference trimmed to the first 30 seconds. Enter the transcript for that clip."
+      : "Reference audio ready. Preview or save the voice.");
+  } catch (error) {
+    fields.reference.value = "";
+    status(error.message, true);
+  } finally {
+    setBusy(false);
+  }
 }
 
 $("new-voice").onclick = () => select();
