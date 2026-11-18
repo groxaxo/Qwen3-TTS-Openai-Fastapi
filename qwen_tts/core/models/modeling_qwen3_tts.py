@@ -2768,33 +2768,45 @@ class Qwen3TTSForConditionalGeneration(Qwen3TTSPreTrainedModel, GenerationMixin)
             frames_since_emit = 0
 
             # Decode window of codec frames to PCM
-            start = max(0, len(codes_buffer) - decode_window_frames)
-            window_codes = torch.stack(codes_buffer[start:], dim=0)  # [T, num_code_groups]
-
-            # Add ref_code as context prefix for stable decoder context from the start
-            window, _ = _add_ref_code_context(
-                window_codes, ref_code_context, ref_code_frames, decode_window_frames
-            )
-
-            # Use optimized decode path when available
-            # Pass pad_to_size to ensure fixed tensor size for torch.compile
-            if use_optimized_decode and hasattr(self.speech_tokenizer, 'decode_streaming'):
-                wavs, sr = self.speech_tokenizer.decode_streaming(
-                    window.to(self.talker.device),
-                    use_optimized=True,
-                    pad_to_size=decode_window_frames,
+            if total_frames_emitted == 0 and len(codes_buffer) < decode_window_frames:
+                # First emit: decode without zero-padding to avoid decoder artifacts.
+                # When the codec buffer is smaller than the decode window, zero-padding
+                # (codebook index 0) introduces artifacts because the neural decoder's
+                # transformer attention and convolutional receptive fields propagate
+                # the zero-code context into the real audio output, causing ~0.1-0.2s of
+                # noise at the beginning of streamed audio.  Using the regular decode()
+                # path produces clean output at the cost of a slightly higher latency for
+                # the first chunk only.
+                window_codes = torch.stack(codes_buffer, dim=0)
+                wavs, sr = self.speech_tokenizer.decode(
+                    [{"audio_codes": window_codes.to(self.talker.device)}]
                 )
+                wav = wavs[0].astype(np.float32)
+                chunk = wav
             else:
-                wavs, sr = self.speech_tokenizer.decode([{"audio_codes": window.to(self.talker.device)}])
-            # Debug removed for performance: decode time tracking
+                # Subsequent emits: use optimized streaming decode with fixed-size window
+                start = max(0, len(codes_buffer) - decode_window_frames)
+                window_codes = torch.stack(codes_buffer[start:], dim=0)
 
-            wav = wavs[0].astype(np.float32)
+                window, _ = _add_ref_code_context(
+                    window_codes, ref_code_context, ref_code_frames, decode_window_frames
+                )
 
-            # Extract only new samples (tail of decoded window)
-            # Use fixed upsample rate to avoid floating-point drift
-            samples_per_frame = self.speech_tokenizer.get_decode_upsample_rate()
-            step_samples = samples_per_frame * emit_every_frames
-            chunk = wav[-step_samples:] if step_samples > 0 else wav
+                if use_optimized_decode and hasattr(self.speech_tokenizer, 'decode_streaming'):
+                    wavs, sr = self.speech_tokenizer.decode_streaming(
+                        window.to(self.talker.device),
+                        use_optimized=True,
+                        pad_to_size=decode_window_frames,
+                    )
+                else:
+                    wavs, sr = self.speech_tokenizer.decode(
+                        [{"audio_codes": window.to(self.talker.device)}]
+                    )
+
+                wav = wavs[0].astype(np.float32)
+                samples_per_frame = self.speech_tokenizer.get_decode_upsample_rate()
+                step_samples = samples_per_frame * emit_every_frames
+                chunk = wav[-step_samples:] if step_samples > 0 else wav
 
             # Crossfade with previous chunk tail for smooth transition
             if decoded_tail is not None and overlap_samples > 0:
