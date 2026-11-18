@@ -29,10 +29,10 @@ jobs:
       - name: Install lightweight test dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy pydantic pytest pytest-asyncio
+          python -m pip install numpy pydantic pytest pytest-asyncio httpx soundfile
 
       - name: Compile Python sources
-        run: python -m compileall -q api tests/test_regressions.py
+        run: python -m compileall -q api scripts tests/test_regressions.py tests/test_cuda_graphs_backend.py tests/test_runtime_launcher.py
 
       - name: Run regression tests
-        run: pytest -q tests/test_regressions.py
+        run: pytest -q tests/test_regressions.py tests/test_cuda_graphs_backend.py tests/test_runtime_launcher.py tests/test_mlx_stream_cleanup.py

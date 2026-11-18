@@ -72,7 +72,7 @@ def _cors_origins() -> list[str]:
 HOST = os.getenv("HOST", "0.0.0.0").strip() or "0.0.0.0"
 PORT = _env_int("PORT", 8880, minimum=1)
 WORKERS = _env_int("WORKERS", 1, minimum=1)
-TTS_BACKEND = os.getenv("TTS_BACKEND", "official").strip().lower() or "official"
+TTS_BACKEND = os.getenv("TTS_BACKEND", "cuda_graphs").strip().lower() or "cuda_graphs"
 TTS_WARMUP_ON_START = _env_bool("TTS_WARMUP_ON_START", False)
 GPU_KEEPALIVE_INTERVAL = _env_int("GPU_KEEPALIVE_INTERVAL", 0, minimum=0)
 TTS_LAZY_LOAD = _env_bool("TTS_LAZY_LOAD", True)

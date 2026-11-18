@@ -13,11 +13,12 @@ import os
 # Backend Selection
 # ============================================================================
 
-TTS_BACKEND = os.getenv("TTS_BACKEND", "official")
+TTS_BACKEND = os.getenv("TTS_BACKEND", "cuda_graphs")
 """
 TTS backend to use.
-Options: 'official', 'vllm', 'pytorch', 'openvino'
-- 'official': Official Qwen3-TTS implementation (default, GPU/CPU auto-detect)
+Options: 'cuda_graphs', 'official', 'optimized', 'vllm', 'pytorch', 'openvino', 'mlx'
+- 'cuda_graphs': Isolated CustomVoice CUDA-graph worker (default; use start_server.sh)
+- 'official': Official Qwen3-TTS implementation (GPU/CPU auto-detect)
 - 'vllm': vLLM-Omni backend for optimized inference
 - 'pytorch': CPU-optimized PyTorch backend
 - 'openvino': Experimental OpenVINO backend for Intel CPUs/NPUs
@@ -27,7 +28,7 @@ TTS_MODEL_ID = os.getenv("TTS_MODEL_ID", os.getenv("TTS_MODEL_NAME", "Qwen/Qwen3
 """
 Model identifier for HuggingFace.
 Examples: 
-- Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (default, voice design)
+- Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice (default, preset speakers)
 - Qwen/Qwen3-TTS-12Hz-1.7B-Base (voice cloning support)
 - Qwen/Qwen3-TTS-12Hz-0.6B-Base (smaller model for CPU)
 """

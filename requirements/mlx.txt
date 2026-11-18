@@ -1,0 +1,17 @@
+# Dedicated Apple Silicon runtime; run the API from this checkout.
+# The root qwen-tts package pins Transformers 4 and must remain in another env.
+mlx==0.32.4
+mlx-audio==0.6.2
+mlx-lm==0.32.2
+transformers==5.21.0
+numpy==2.4.6
+fastapi==0.163.1
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+pydantic==2.14.3
+python-multipart==0.0.34
+soundfile==0.14.0
+librosa==0.11.0
+inflect==7.6.0
+aiofiles==25.1.0
+pydub==0.25.1

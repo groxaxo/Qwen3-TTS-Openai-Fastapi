@@ -27,14 +27,15 @@ class TestBackendSelection:
         """Reset backend after each test."""
         reset_backend()
     
-    def test_default_backend_is_official(self, monkeypatch):
-        """Test that official backend is selected by default."""
+    def test_default_backend_is_cuda_graphs(self, monkeypatch):
+        """The default connects to the isolated CustomVoice graph worker."""
         # Ensure TTS_BACKEND is not set
         monkeypatch.delenv("TTS_BACKEND", raising=False)
         
         backend = get_backend()
-        assert isinstance(backend, OfficialQwen3TTSBackend)
-        assert backend.get_backend_name() == "official"
+        from api.backends.cuda_graphs import CUDAGraphBackend
+        assert isinstance(backend, CUDAGraphBackend)
+        assert backend.get_backend_name() == "cuda_graphs"
     
     def test_official_backend_via_env(self, monkeypatch):
         """Test selecting official backend via environment variable."""
@@ -596,7 +597,7 @@ class TestMLXBackendInitialize:
 
         with patch("sys.platform", "darwin"), patch("platform.machine", return_value="arm64"), \
              patch.object(builtins, "__import__", side_effect=guarded_import):
-            with pytest.raises(RuntimeError, match=r"\[api,mlx\]"):
+            with pytest.raises(RuntimeError, match=r"requirements/mlx\.txt"):
                 asyncio.get_event_loop().run_until_complete(backend.initialize())
 
 
