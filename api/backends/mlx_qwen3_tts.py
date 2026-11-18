@@ -6,16 +6,16 @@
 This backend uses mlx-audio to run Qwen3-TTS natively on Apple Silicon.
 The default checkpoint is a CustomVoice model, so the backend uses
 ``generate_custom_voice`` for non-streaming and the unified ``generate()``
-with ``stream=True`` for incremental chunks. The backend reports
-``supports_voice_cloning() == False``; the ``clone:ProfileName``
-voice-library route therefore falls through to the existing
-"voice cloning not supported" error path.
+with ``stream=True`` for incremental chunks. When MLX_CLONE_MODEL_ID is
+configured, the same inference thread loads a separate Base model on demand
+for reference voices.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import platform
 import sys
 import threading
@@ -116,6 +116,8 @@ class MLXQwen3TTSBackend(TTSBackend):
         self._broken = False  # set when generation hangs past the cap
         self._voices: List[str] = []
         self._languages: List[str] = []
+        self._clone_model_id = os.getenv("MLX_CLONE_MODEL_ID", "").strip()
+        self._clone_model = None
 
         # Keep loading and generation on one dedicated worker. This
         # prevents MLX inference from blocking FastAPI's event loop and
@@ -668,8 +670,50 @@ class MLXQwen3TTSBackend(TTSBackend):
             "vram_used": None,
         }
 
+    async def generate_voice_clone(
+        self, text, ref_audio, ref_audio_sr, ref_text=None, language="Auto",
+        x_vector_only_mode=False, speed=1.0,
+    ):
+        if not self._clone_model_id:
+            raise RuntimeError("Set MLX_CLONE_MODEL_ID to enable reference voices.")
+
+        def generate():
+            import mlx.core as mx
+            from mlx_audio.tts.utils import load_model
+
+            if self._clone_model is None:
+                model = load_model(self._clone_model_id)
+                if getattr(model.config, "tts_model_type", None) != "base":
+                    raise ValueError("MLX_CLONE_MODEL_ID must point to a Base checkpoint.")
+                self._clone_model = model
+            model = self._clone_model
+            sample_rate = int(model.sample_rate)
+            if ref_audio_sr != sample_rate:
+                import librosa
+                reference = librosa.resample(ref_audio, orig_sr=ref_audio_sr, target_sr=sample_rate)
+            else:
+                reference = ref_audio
+            chunks = [
+                self._result_to_numpy(result)
+                for result in model.generate(
+                    text=text, ref_audio=mx.array(reference),
+                    ref_text=None if x_vector_only_mode else ref_text,
+                    lang_code=self._resolve_language(language), max_tokens=2048,
+                )
+            ]
+            if not chunks:
+                raise RuntimeError("MLX returned no clone audio.")
+            audio = np.concatenate(chunks)
+            if speed != 1.0:
+                import librosa
+                audio = librosa.effects.time_stretch(audio, rate=speed)
+            return audio, sample_rate
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, generate)
+
     def supports_voice_cloning(self) -> bool:
-        return False
+        return bool(self._clone_model_id)
 
     def get_model_type(self) -> str:
         return "customvoice"

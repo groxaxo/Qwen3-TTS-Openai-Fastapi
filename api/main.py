@@ -198,6 +198,11 @@ from .routers.openai_compatible import router as openai_router
 
 app.include_router(openai_router, prefix="/v1")
 
+if _env_bool("ENABLE_LOCAL_VOICE_STUDIO", False):
+    from .routers.voice_studio import router as voice_studio_router
+
+    app.include_router(voice_studio_router)
+
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 

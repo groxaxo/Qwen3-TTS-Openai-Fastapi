@@ -356,7 +356,9 @@ The active backend/checkpoint must support voice cloning. See `docs/voice-librar
 
 ## Apple Silicon / MLX
 
-Use a dedicated Conda environment for the current MLX runtime. The root `qwen-tts` package pins Transformers 4, while MLX-Audio 0.6.2 uses Transformers 5. Install the standalone MLX requirements and run the API from the checkout.
+Use a dedicated Conda environment for the current MLX runtime. The launchd installation starts the local API and browser Voice Studio on login. The studio can preview, save and edit reference voice profiles using a separate Base checkpoint alongside the built-in CustomVoice speakers. See the [Mac Voice Studio guide](docs/mac-voice-studio.md).
+
+For foreground development, run the API from the checkout. The root `qwen-tts` package pins Transformers 4, while MLX-Audio 0.6.2 uses Transformers 5.
 
 ```bash
 brew install ffmpeg

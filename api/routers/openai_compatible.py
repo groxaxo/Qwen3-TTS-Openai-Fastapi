@@ -563,12 +563,19 @@ async def create_speech(
 
             # Cache reference audio reads to avoid repeated disk I/O
             ref_audio_path = profile["ref_audio_path"]
+            file_stat = Path(ref_audio_path).stat()
+            canonical_key = repr((
+                canonical_key, ref_audio_path, file_stat.st_mtime_ns, file_stat.st_size,
+                profile["ref_text"], profile["x_vector_only_mode"], profile["language"],
+            ))
             if canonical_key not in _ref_audio_cache:
                 try:
                     ref_audio_np, ref_sr = sf.read(ref_audio_path)
                     if len(ref_audio_np.shape) > 1:
                         ref_audio_np = ref_audio_np.mean(axis=1)
                     ref_audio_np = ref_audio_np.astype(np.float32)
+                    if len(_ref_audio_cache) >= 32:
+                        _ref_audio_cache.pop(next(iter(_ref_audio_cache)))
                     _ref_audio_cache[canonical_key] = (ref_audio_np, ref_sr)
                     logger.info(f"Reference audio cached for profile '{profile['name']}'")
                 except Exception as exc:
