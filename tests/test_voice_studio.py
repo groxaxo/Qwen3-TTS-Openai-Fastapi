@@ -1,6 +1,8 @@
 import io
+import subprocess
 
 import numpy as np
+import pytest
 import soundfile as sf
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -23,6 +25,77 @@ def recording(amplitude):
     file = io.BytesIO()
     sf.write(file, np.full(24000, amplitude, dtype=np.float32), 24000, format="WAV")
     return {"reference": ("reference.wav", file.getvalue(), "audio/wav")}
+
+
+def test_tailnet_studio_requires_the_configured_login_and_origin(monkeypatch):
+    origin = "https://mac.example.ts.net:18884"
+    login = "owner@example.com"
+    monkeypatch.setenv("VOICE_STUDIO_TAILSCALE_ORIGIN", origin)
+    monkeypatch.setenv("VOICE_STUDIO_TAILSCALE_LOGIN", login)
+    app = FastAPI()
+    app.include_router(voice_studio.router)
+
+    with TestClient(app, base_url=origin, client=("100.64.0.2", 20000)) as client:
+        identity = {"Tailscale-User-Login": login}
+        assert client.get("/studio", headers=identity).status_code == 200
+        assert client.get("/studio").status_code == 403
+        assert client.get("/studio", headers={
+            "Tailscale-User-Login": "other@example.com",
+        }).status_code == 403
+        assert client.get("/studio", headers={
+            **identity, "Origin": "https://elsewhere.example",
+        }).status_code == 403
+        assert client.get("/studio", headers={
+            **identity, "Host": "other.example.ts.net:18884",
+        }).status_code == 403
+
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 20000)) as client:
+        assert client.get("/studio").status_code == 200
+
+
+@pytest.mark.parametrize(("extension", "codecs"), [
+    ("mp4", ["-c:v", "mpeg4", "-c:a", "aac"]),
+    ("avi", ["-c:v", "mpeg4", "-c:a", "pcm_s16le"]),
+    ("mkv", ["-c:v", "mpeg4", "-c:a", "flac"]),
+    ("wav", ["-vn", "-c:a", "pcm_s16le"]),
+    ("m4a", ["-vn", "-c:a", "aac"]),
+])
+def test_upload_normalizes_audio_and_video(tmp_path, extension, codecs):
+    source = tmp_path / f"reference.{extension}"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=32x32:r=10",
+        "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100",
+        "-ac", "2", "-t", "2", *codecs, str(source),
+    ], check=True)
+    app = FastAPI()
+    app.include_router(voice_studio.router)
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 20000)) as client:
+        with source.open("rb") as recording_file:
+            response = client.post("/studio/api/reference/normalize",
+                                   files={"reference": (source.name, recording_file)})
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"] == "audio/wav"
+    assert response.headers["x-reference-trimmed"] == "false"
+    with sf.SoundFile(io.BytesIO(response.content)) as audio:
+        assert (audio.samplerate, audio.channels, audio.subtype) == (24000, 1, "PCM_16")
+        assert 1.9 <= audio.frames / audio.samplerate <= 2.1
+        assert np.max(np.abs(audio.read())) > 0.01
+
+
+def test_reference_conversion_reports_trimming_and_unreadable_input():
+    app = FastAPI()
+    app.include_router(voice_studio.router)
+    source = io.BytesIO()
+    sf.write(source, np.full(24000 * 31, 0.1), 24000, format="WAV")
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 20000)) as client:
+        response = client.post("/studio/api/reference/normalize",
+                               files={"reference": ("long.wav", source.getvalue())})
+        invalid = client.post("/studio/api/reference/normalize",
+                              files={"reference": ("bad.mp4", b"not a media file")})
+    assert response.status_code == 200, response.text
+    assert response.headers["x-reference-trimmed"] == "true"
+    assert sf.info(io.BytesIO(response.content)).duration == 30
+    assert invalid.status_code == 422
 
 
 def test_preview_is_private_and_saved_replacement_reaches_speech_api(tmp_path, monkeypatch):
