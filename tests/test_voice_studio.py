@@ -45,6 +45,8 @@ def test_preview_is_private_and_saved_replacement_reaches_speech_api(tmp_path, m
         preview = client.post("/studio/api/preview", data={**settings, "text": "Test"},
                               files=recording(0.1))
         assert preview.status_code == 200
+        assert preview.headers["content-type"] == "audio/ogg"
+        assert preview.content.startswith(b"OggS") and b"OpusHead" in preview.content[:128]
         assert client.get("/studio/api/voices").json()["profiles"] == []
 
         saved = client.post("/studio/api/voices", data=settings, files=recording(0.1))

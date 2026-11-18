@@ -158,8 +158,8 @@ def encode_audio(
 
     wav_bytes = convert_to_wav(audio, sample_rate)
     format_params = {
-        "mp3": {"format": "mp3", "bitrate": "192k"},
-        "opus": {"format": "opus", "bitrate": "128k"},
+        "mp3": {"format": "mp3", "bitrate": "128k"},
+        "opus": {"format": "opus", "bitrate": "48k"},
         "aac": {"format": "adts", "bitrate": "192k"},
         "flac": {"format": "flac"},
     }

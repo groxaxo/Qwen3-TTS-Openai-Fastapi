@@ -136,6 +136,8 @@ form.onsubmit = async (event) => {
   event.preventDefault();
   if (local.busy) return;
   const body = payload();
+  const supportsOpus = $("result").canPlayType('audio/ogg; codecs="opus"');
+  body.set("response_format", supportsOpus ? "opus" : "mp3");
   clearResult();
   setBusy(true);
   status("Generating preview…");

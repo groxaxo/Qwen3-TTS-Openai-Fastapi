@@ -5,6 +5,7 @@ import json
 import os
 import re
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -140,6 +141,7 @@ async def preview(
     preset: str = Form(""),
     profile_id: str = Form(""),
     instruction: str = Form("", max_length=500),
+    response_format: Literal["opus", "mp3"] = Form("opus"),
     reference: UploadFile | None = File(None),
 ):
     backend = await get_tts_backend()
@@ -162,8 +164,9 @@ async def preview(
                 ref_text=transcript.strip() or None, language=language,
                 x_vector_only_mode=speaker_only, speed=speed,
             )
-    data = await asyncio.to_thread(encode_audio, audio, "wav", rate)
-    return Response(data, media_type="audio/wav", headers={"Cache-Control": "no-store"})
+    data = await asyncio.to_thread(encode_audio, audio, response_format, rate)
+    media_type = "audio/ogg" if response_format == "opus" else "audio/mpeg"
+    return Response(data, media_type=media_type, headers={"Cache-Control": "no-store"})
 
 
 @router.post("/studio/api/voices")
