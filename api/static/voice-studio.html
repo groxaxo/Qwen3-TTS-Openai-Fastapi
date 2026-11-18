@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Qwen Voice Studio</title>
+<link rel="stylesheet" href="/static/voice-studio.css">
+<script src="/static/voice-studio.js" defer></script>
+</head>
+<body>
+<header><strong>Qwen Voice Studio</strong><span id="connection">Connecting to local API</span></header>
+<main>
+<aside aria-label="Voice library">
+<h1>Voice library</h1>
+<button id="new-voice" class="primary" type="button">＋ New voice</button>
+<nav id="voices" aria-label="Available voices"></nav>
+</aside>
+<section class="editor" aria-labelledby="editor-title">
+<h2 id="editor-title">Voice editor</h2>
+<form id="editor">
+<div class="fields">
+<label>Name<input name="name" maxlength="80" placeholder="My reference voice"></label>
+<label>Language<select name="language">
+<option>Auto</option><option>English</option><option>Chinese</option><option>Japanese</option><option>Korean</option><option>German</option><option>French</option><option>Spanish</option><option>Russian</option><option>Portuguese</option><option>Italian</option>
+</select></label>
+</div>
+<div id="reference-settings">
+<div class="rule">
+<label for="reference">Reference recording</label>
+<p class="hint">Choose a clean recording of one speaker, between 1 and 30 seconds.</p>
+<div id="dropzone">
+<div class="upload-icon" aria-hidden="true">↑</div>
+<strong>Choose an audio file or drag and drop</strong>
+<p class="hint">WAV, MP3, FLAC or OGG · Up to 15 MB</p>
+<input id="reference" name="reference" type="file" accept=".wav,.mp3,.flac,.ogg">
+</div>
+<div id="source-panel" class="audio-panel" hidden>
+<strong id="source-label">Reference playback</strong>
+<audio id="source" controls preload="metadata" aria-label="Reference recording"></audio>
+</div>
+</div>
+<label>Transcript<textarea name="transcript" maxlength="4096" rows="3" placeholder="Enter exactly what the speaker says in the reference recording."></textarea></label>
+<label class="checkbox"><input type="checkbox" name="speaker_only" value="true"> Speaker-only reference</label>
+<p class="hint">Use the speaker’s voice without a reference transcript.</p>
+</div>
+<label id="preset-settings" hidden>Delivery instructions<input name="instruction" maxlength="500" placeholder="For example, speak calmly and clearly"></label>
+<div class="rule">
+<label>Audition text<textarea name="text" maxlength="1000" rows="3">Hello, this is a preview from Qwen Voice Studio.</textarea></label>
+<label class="speed">Preview speed<select name="speed"><option value="0.75">0.75×</option><option value="1" selected>1.00×</option><option value="1.25">1.25×</option><option value="1.5">1.50×</option></select></label>
+</div>
+<div class="actions"><button id="preview" class="primary" type="submit">▶ Preview</button><button id="save" type="button">Save voice</button></div>
+<p id="status" role="status" aria-live="polite"></p>
+<div id="result-panel" class="audio-panel" hidden><strong>Preview audio</strong><audio id="result" controls aria-label="Generated preview"></audio></div>
+</form>
+</section>
+</main>
+</body>
+</html>
