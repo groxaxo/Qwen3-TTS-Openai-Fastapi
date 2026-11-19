@@ -473,6 +473,18 @@ The server does not implement authentication. Put it behind an authenticated rev
 
 ## Development and tests
 
+Run lightweight regression checks locally before pushing. Use a Python 3.10 or
+3.12 virtual environment and repeat the checks on both versions for compatibility.
+
+```bash
+python -m pip install numpy pydantic pytest pytest-asyncio httpx soundfile
+python -m compileall -q api scripts tests
+python -m pytest -q tests/test_regressions.py tests/test_cuda_graphs_backend.py \
+    tests/test_runtime_launcher.py tests/test_mlx_stream_cleanup.py
+```
+
+To run the full suite with the project dependencies:
+
 ```bash
 pip install -e ".[api,dev]"
 pytest -q
